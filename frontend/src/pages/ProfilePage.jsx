@@ -4,7 +4,7 @@ import { useAuth } from "../context/AuthContext";
 
 const API_URL = import.meta.env.VITE_API_URL;
 
-export default function ProfilePage() {
+export default function ProfilePage({ onSaved, onLogout }) {
   const { user, logout } = useAuth();
   const [form, setForm] = useState({ name: "", mobile: "" });
   const [saved, setSaved] = useState(false);
@@ -21,6 +21,7 @@ export default function ProfilePage() {
     try {
       await axios.put(`${API_URL}/auth/profile`, { ...form, email: user.email });
       setSaved(true);
+      onSaved?.();
       setTimeout(() => setSaved(false), 2000);
     } finally {
       setLoading(false);
@@ -85,7 +86,7 @@ export default function ProfilePage() {
             <span className="text-indigo-600 font-medium">Free</span>
           </div>
         </div>
-        <button onClick={logout}
+        <button onClick={() => { logout(); onLogout?.(); }}
           className="mt-5 w-full border border-red-200 text-red-400 hover:bg-red-50 rounded-xl py-2.5 text-sm font-medium transition">
           Sign Out
         </button>

@@ -25,7 +25,7 @@ init_db()  # create SQLite tables on startup if they don't exist
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=os.getenv("ALLOWED_ORIGINS", "*").split(","),
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -199,3 +199,54 @@ async def get_video(payload: VideoRequest, authorization: str = Header(default="
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# ─── Streaming answer endpoint ────────────────────────────────────────────────
+
+from fastapi.responses import StreamingResponse
+from langchain_groq import ChatGroq
+import json
+
+@app.post("/ask/stream")
+async def ask_stream(payload: AskRequest, authorization: str = Header(default="")):
+    """Stream answer tokens as Server-Sent Events for real-time display."""
+    claims = get_current_user(authorization)
+    if not payload.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty")
+
+    from rag_pipeline import vectorstore, embeddings
+    log_activity(claims["sub"], "asked", payload.question[:100])
+
+    retriever = vectorstore.as_retriever(
+        search_type="mmr",
+        search_kwargs={"k": 6, "fetch_k": 12},
+    )
+    docs = retriever.invoke(payload.question)
+    context = "\n\n".join(d.page_content for d in docs)
+
+    sources = []
+    seen = set()
+    for doc in docs:
+        page = doc.metadata.get("page", 0) + 1
+        filename = os.path.basename(doc.metadata.get("source", "unknown"))
+        if page not in seen:
+            seen.add(page)
+            sources.append({"page": page, "file": filename, "snippet": doc.page_content[:200].strip()})
+
+    prompt = f"""Answer the question based ONLY on the context below.
+Context: {context}
+Question: {payload.question}
+Answer:"""
+
+    llm = ChatGroq(api_key=os.getenv("GROQ_API_KEY"), model="llama-3.1-8b-instant", temperature=0, streaming=True)
+
+    async def generate():
+        async for chunk in llm.astream(prompt):
+            token = chunk.content
+            if token:
+                yield f"data: {json.dumps({'token': token})}\n\n"
+        # Send sources after streaming completes
+        yield f"data: {json.dumps({'sources': sources, 'done': True})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

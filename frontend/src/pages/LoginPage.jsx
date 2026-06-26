@@ -5,7 +5,7 @@ import { GoogleLogin } from "@react-oauth/google";
 
 const API_URL = import.meta.env.VITE_API_URL;
 
-export default function LoginPage() {
+export default function LoginPage({ onSuccess }) {
   const { login } = useAuth();
   const [mode, setMode] = useState("login"); // login | register
   const [form, setForm] = useState({ name: "", email: "", password: "", mobile: "" });
@@ -21,10 +21,9 @@ export default function LoginPage() {
         ? { email: form.email, password: form.password }
         : { name: form.name, email: form.email, password: form.password, mobile: form.mobile };
       const res = await axios.post(`${API_URL}${endpoint}`, body);
-      setError("");
-      // Show brief success before redirect
-      setError(mode === "login" ? "✅ Welcome back! Redirecting..." : "✅ Account created! Redirecting...");
-      setTimeout(() => login(res.data.token, res.data.name, res.data.email), 1000);
+      login(res.data.token, res.data.name, res.data.email);
+      onSuccess?.("Google login successful!");
+      onSuccess?.(mode === "login" ? "Welcome back!" : "Account created!");
     } catch (err) {
       setError(err.response?.data?.detail || "Something went wrong.");
     } finally {
@@ -37,6 +36,8 @@ export default function LoginPage() {
     try {
       const res = await axios.post(`${API_URL}/auth/google`, { token: credentialResponse.credential });
       login(res.data.token, res.data.name, res.data.email);
+      onSuccess?.("Google login successful!");
+      onSuccess?.(mode === "login" ? "Welcome back!" : "Account created!");
     } catch {
       setError("Google login failed. Try again.");
     }
@@ -86,11 +87,7 @@ export default function LoginPage() {
             )}
           </div>
 
-          {error && (
-            <p className={`mt-3 text-xs text-center ${error.startsWith("✅") ? "text-green-500" : "text-red-500"}`}>
-              {error}
-            </p>
-          )}
+          {error && <p className="mt-3 text-xs text-red-500 text-center">{error}</p>}
 
           <button onClick={handleSubmit} disabled={loading}
             className="mt-4 w-full bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-xl py-3 font-semibold text-sm hover:opacity-90 disabled:opacity-50 transition shadow-md">
