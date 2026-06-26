@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    volumes:
+      # Persist vector DB and uploaded PDFs across container restarts
+      - ./backend/chroma_db:/app/chroma_db
+      - ./backend/uploaded_pdfs:/app/uploaded_pdfs
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:5173"
+    env_file:
+      - ./frontend/.env
+    depends_on:
+      - backend
