@@ -1,7 +1,7 @@
 import os
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_groq import ChatGroq
 from langchain_chroma import Chroma
 from langchain.chains import RetrievalQA
@@ -10,8 +10,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 CHROMA_DIR = os.getenv("CHROMA_DIR", "chroma_db")
 
 # Local embedding model — runs on CPU, completely free, no API key needed
-embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-
+embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
 vectorstore = Chroma(
     collection_name="lecture_notes",
     embedding_function=embeddings,
