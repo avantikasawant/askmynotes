@@ -22,7 +22,9 @@ export default function Upload({ onUploadSuccess }) {
     try {
       const res = await axios.post(`${API_URL}/upload`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
+        timeout: 120000, // 2 minutes — needed for cold start + embedding model load
       });
+
       setResult({ success: true, message: `✅ Indexed ${res.data.chunks_indexed} chunks from "${res.data.filename}"` });
       setTimeout(() => onUploadSuccess?.(), 1200);
     } catch (err) {
@@ -107,9 +109,8 @@ export default function Upload({ onUploadSuccess }) {
 
       {/* Result message */}
       {result && (
-        <div className={`rounded-xl p-4 text-sm font-medium text-center ${
-          result.success ? "bg-green-50 text-green-700 border border-green-200" : "bg-red-50 text-red-700 border border-red-200"
-        }`}>
+        <div className={`rounded-xl p-4 text-sm font-medium text-center ${result.success ? "bg-green-50 text-green-700 border border-green-200" : "bg-red-50 text-red-700 border border-red-200"
+          }`}>
           {result.message}
           {result.success && <p className="text-xs font-normal mt-1 text-green-500">Redirecting to Ask tab...</p>}
         </div>
