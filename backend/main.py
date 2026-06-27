@@ -146,10 +146,13 @@ async def ask_question(payload: AskRequest, authorization: str = Header(default=
     return result
 
 
+class QuizRequest(BaseModel):
+    difficulty: str = "medium"
+
 @app.post("/quiz")
-async def quiz_endpoint(authorization: str = Header(default="")):
+async def quiz_endpoint(payload: QuizRequest = QuizRequest(), authorization: str = Header(default="")):
     claims = get_current_user(authorization)
-    return generate_quiz()
+    return generate_quiz(payload.difficulty)
 
 
 @app.post("/quiz/save")
@@ -250,3 +253,53 @@ Answer:"""
 
     return StreamingResponse(generate(), media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ─── Study Guide ─────────────────────────────────────────────────────────────
+
+@app.post("/study-guide")
+async def study_guide(authorization: str = Header(default="")):
+    get_current_user(authorization)
+    from rag_pipeline import get_top_chunks
+    content = get_top_chunks(k=10)
+    if not content.strip():
+        return {"error": "No notes uploaded yet."}
+
+    from groq import Groq
+    client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    prompt = f"""Analyse these lecture notes and return ONLY valid JSON with this structure:
+{{
+  "summary": "2-3 sentence overview of the document",
+  "topics": [
+    {{"topic": "topic name", "priority": "high|medium|low", "reason": "why this is important"}}
+  ],
+  "study_tips": ["tip 1", "tip 2", "tip 3"]
+}}
+
+Notes:
+{content}"""
+
+    response = client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        temperature=0.3,
+    )
+    import json
+    try:
+        return json.loads(response.choices[0].message.content)
+    except:
+        return {"error": "Failed to generate study guide."}
+
+
+# ─── PDF Serve ───────────────────────────────────────────────────────────────
+
+from fastapi.responses import FileResponse
+
+@app.get("/pdf/{filename}")
+async def serve_pdf(filename: str, authorization: str = Header(default="")):
+    get_current_user(authorization)
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="PDF not found")
+    return FileResponse(file_path, media_type="application/pdf")

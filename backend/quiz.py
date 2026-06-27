@@ -6,9 +6,11 @@ from rag_pipeline import get_top_chunks
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 QUIZ_PROMPT = """You are a quiz generator for college students.
-Based ONLY on the following lecture notes content, generate exactly 5 multiple-choice questions.
+Based ONLY on the following lecture notes, generate exactly 5 multiple-choice questions at {difficulty} difficulty level.
 
-Return ONLY valid JSON (no markdown, no commentary, no code fences) in this exact format:
+{difficulty_instruction}
+
+Return ONLY valid JSON (no markdown, no commentary) in this exact format:
 {{
   "questions": [
     {{
@@ -23,33 +25,37 @@ Return ONLY valid JSON (no markdown, no commentary, no code fences) in this exac
 Rules:
 - "options" must have exactly 4 items
 - "correct_index" is the 0-based index of the correct option
-- "explanation" is a short (1-2 sentence) reason why that option is correct, written for a student reviewing the answer
-- Questions must be answerable from the content below
+- "explanation" is 1-2 sentences explaining why the correct answer is right
 
-Lecture notes content:
+Lecture notes:
 {content}
 """
 
+DIFFICULTY_INSTRUCTIONS = {
+    "easy":   "Questions should test basic recall and simple understanding. Use straightforward language.",
+    "medium": "Questions should test understanding and application of concepts. Mix recall and analytical questions.",
+    "hard":   "Questions should test deep understanding, analysis, and application. Use nuanced options that require careful thinking.",
+}
 
-def generate_quiz() -> dict:
-    content = get_top_chunks(k=6)
-
+def generate_quiz(difficulty: str = "medium") -> dict:
+    content = get_top_chunks(k=8)
     if not content.strip():
         return {"error": "No notes have been uploaded yet."}
 
+    prompt = QUIZ_PROMPT.format(
+        difficulty=difficulty,
+        difficulty_instruction=DIFFICULTY_INSTRUCTIONS.get(difficulty, DIFFICULTY_INSTRUCTIONS["medium"]),
+        content=content
+    )
+
     response = client.chat.completions.create(
         model="llama-3.1-8b-instant",
-        messages=[{"role": "user", "content": QUIZ_PROMPT.format(content=content)}],
-        # Forces strict JSON output, avoiding markdown fences that break json.loads
+        messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
         temperature=0.5,
     )
 
-    raw = response.choices[0].message.content
-
     try:
-        quiz_data = json.loads(raw)
+        return json.loads(response.choices[0].message.content)
     except json.JSONDecodeError:
-        return {"error": "Failed to parse quiz response from model."}
-
-    return quiz_data
+        return {"error": "Failed to parse quiz response."}

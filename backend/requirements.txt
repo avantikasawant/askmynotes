@@ -9,7 +9,7 @@ langchain-chroma==0.1.4
 chromadb==0.5.18
 pypdf==5.0.1
 groq==0.13.0
-fastembed==0.3.1
+sentence-transformers==3.3.1
 pydantic==2.9.2
 python-dotenv==1.0.1
 PyJWT==2.9.0

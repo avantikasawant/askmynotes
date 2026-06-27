@@ -1,36 +1,74 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  :root {
+    --sidebar-width: 240px;
+    --sidebar-collapsed: 64px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Dark mode variables */
+  .dark {
+    --bg-primary: #0F172A;
+    --bg-secondary: #1E293B;
+    --bg-card: #1E293B;
+    --text-primary: #F1F5F9;
+    --text-secondary: #94A3B8;
+    --border: #334155;
+  }
+
+  .light {
+    --bg-primary: #FAFAFA;
+    --bg-secondary: #F1F5F9;
+    --bg-card: #FFFFFF;
+    --text-primary: #0F172A;
+    --text-secondary: #64748B;
+    --border: #E2E8F0;
+  }
+}
+
 @layer utilities {
   .animate-fadeIn {
-    animation: fadeIn 0.25s ease-in-out;
+    animation: fadeIn 0.2s ease-out;
+  }
+  .animate-slideIn {
+    animation: slideIn 0.25s ease-out;
+  }
+  .animate-slideUp {
+    animation: slideUp 0.3s ease-out;
   }
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(6px); }
+  from { opacity: 0; transform: translateY(4px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 
-/* Smooth tab transitions */
-main > * {
-  animation: fadeIn 0.2s ease-in-out;
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(-8px); }
+  to   { opacity: 1; transform: translateX(0); }
 }
 
-/* Mobile scrollbar hide */
-.overflow-y-auto::-webkit-scrollbar {
-  width: 4px;
-}
-.overflow-y-auto::-webkit-scrollbar-thumb {
-  background: #e0e7ff;
-  border-radius: 4px;
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
-/* Mobile responsive fixes */
-@media (max-width: 640px) {
-  .max-w-4xl {
-    padding-left: 1rem;
-    padding-right: 1rem;
-  }
-}
+/* Scrollbar styling */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 4px; }
+.dark ::-webkit-scrollbar-thumb { background: #334155; }
+
+/* Sidebar transition */
+.sidebar-transition { transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1); }
