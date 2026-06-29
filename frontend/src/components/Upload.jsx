@@ -62,6 +62,8 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
           headers: { "Content-Type": "multipart/form-data" },
           timeout: 300000,
         });
+        const url = URL.createObjectURL(res.data);
+        setPreviewUrl(url);
         setResults(res.data.results || []);
       }
       setFiles([]);
