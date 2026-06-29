@@ -10,7 +10,7 @@ QUESTION_COUNT = {"easy": 5, "medium": 7, "hard": 10}
 DIFFICULTY_INSTRUCTIONS = {
     "easy":   "Questions should test basic recall. Use simple, clear language.",
     "medium": "Mix recall and application. Moderate complexity.",
-    "hard":   "Test deep understanding and analysis. Use nuanced distractors requiring careful thinking.",
+    "hard":   "Test deep understanding and analysis. Use nuanced distractors.",
 }
 
 def generate_quiz(difficulty: str = "medium") -> dict:
@@ -24,19 +24,22 @@ def generate_quiz(difficulty: str = "medium") -> dict:
 Based ONLY on the following lecture notes, generate exactly {count} multiple-choice questions at {difficulty} difficulty.
 {DIFFICULTY_INSTRUCTIONS.get(difficulty, '')}
 
-Return ONLY valid JSON with this structure:
+Return ONLY valid JSON:
 {{
   "questions": [
     {{
       "question": "string",
       "options": ["string", "string", "string", "string"],
       "correct_index": 0,
-      "explanation": "1-2 sentences explaining why the correct answer is right"
+      "topic": "brief topic name this question covers (2-4 words)"
     }}
   ]
 }}
 
-Rules: options must have exactly 4 items. correct_index is 0-based.
+Rules:
+- options must have exactly 4 items
+- correct_index is 0-based
+- topic is a short label for the concept being tested (used for video search)
 
 Lecture notes:
 {content}"""
@@ -52,3 +55,34 @@ Lecture notes:
         return json.loads(response.choices[0].message.content)
     except json.JSONDecodeError:
         return {"error": "Failed to parse quiz response."}
+
+
+def get_quiz_topics(difficulty: str = "medium") -> dict:
+    """Extract main topics from notes for pre-quiz learning videos."""
+    content = get_top_chunks(k=8)
+    if not content.strip():
+        return {"error": "No notes uploaded."}
+
+    prompt = f"""Based on these lecture notes, list the 4-5 main topics a student should understand before taking a {difficulty} quiz.
+
+Return ONLY valid JSON:
+{{
+  "topics": ["topic 1", "topic 2", "topic 3", "topic 4", "topic 5"]
+}}
+
+Keep each topic concise (2-5 words). These will be used to search for educational videos.
+
+Notes:
+{content}"""
+
+    response = client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        temperature=0.3,
+    )
+
+    try:
+        return json.loads(response.choices[0].message.content)
+    except:
+        return {"topics": []}

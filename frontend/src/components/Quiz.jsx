@@ -4,33 +4,101 @@ import axios from "axios";
 const API_URL = import.meta.env.VITE_API_URL;
 
 const DIFFICULTY = {
-  easy:   { label: "Easy",   time: 600, color: "bg-green-500", border: "border-green-500", desc: "5 questions · 10 min · 2 attempts" },
-  medium: { label: "Medium", time: 420, color: "bg-amber-500", border: "border-amber-500", desc: "7 questions · 7 min · 2 attempts" },
-  hard:   { label: "Hard",   time: 300, color: "bg-red-500",   border: "border-red-500",   desc: "10 questions · 5 min · 2 attempts" },
+  easy:   { label: "Easy",   time: 600, color: "bg-green-500", border: "border-green-500", questions: 5,  desc: "5 questions · 10 min" },
+  medium: { label: "Medium", time: 420, color: "bg-amber-500", border: "border-amber-500", questions: 7,  desc: "7 questions · 7 min" },
+  hard:   { label: "Hard",   time: 300, color: "bg-red-500",   border: "border-red-500",   questions: 10, desc: "10 questions · 5 min" },
 };
 
-function VideoCard({ topic }) {
-  const [video, setVideo] = useState(null);
-  const [loading, setLoading] = useState(true);
+// Pre-quiz learning panel
+function LearnPanel({ difficulty, onClose }) {
+  const [topics, setTopics] = useState([]);
+  const [videos, setVideos] = useState({});  // topic -> { loading, data }
+  const [loadingTopics, setLoadingTopics] = useState(true);
 
   useEffect(() => {
-    axios.post(`${API_URL}/video`, { topic })
-      .then(res => setVideo(res.data))
-      .catch(() => setVideo({ error: true }))
-      .finally(() => setLoading(false));
-  }, [topic]);
-
-  if (loading) return <div className="h-20 bg-gray-100 rounded-xl animate-pulse" />;
-  if (!video || video.error) return null;
+    axios.get(`${API_URL}/quiz/topics?difficulty=${difficulty}`)
+      .then(res => {
+        const t = res.data.topics || [];
+        setTopics(t);
+        // fetch videos for each topic
+        t.forEach(topic => {
+          setVideos(prev => ({ ...prev, [topic]: { loading: true, data: null } }));
+          axios.post(`${API_URL}/videos`, { topic, max_results: 1 })
+            .then(r => setVideos(prev => ({ ...prev, [topic]: { loading: false, data: r.data } })))
+            .catch(() => setVideos(prev => ({ ...prev, [topic]: { loading: false, data: null } })));
+        });
+      })
+      .catch(() => setTopics([]))
+      .finally(() => setLoadingTopics(false));
+  }, [difficulty]);
 
   return (
-    <div className="rounded-xl overflow-hidden border border-gray-200">
-      <iframe src={video.embed_url} title={video.title} width="100%" height="160"
-        frameBorder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-        allowFullScreen />
-      <div className="p-2 bg-gray-50">
-        <p className="text-xs font-medium truncate text-slate-700">{video.title}</p>
-        <p className="text-[10px] text-slate-400">{video.channel}</p>
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl my-4">
+        <div className="flex items-center justify-between p-5 border-b border-gray-100">
+          <div>
+            <h3 className="font-bold text-slate-900">Learn Before You Test</h3>
+            <p className="text-xs text-slate-500 mt-0.5">Key topics for {DIFFICULTY[difficulty].label} level · Watch, then take the quiz</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-2xl leading-none">×</button>
+        </div>
+
+        <div className="p-5 space-y-5 max-h-[70vh] overflow-y-auto">
+          {loadingTopics ? (
+            <div className="flex items-center justify-center h-24">
+              <div className="w-8 h-8 border-4 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+            </div>
+          ) : topics.length === 0 ? (
+            <p className="text-sm text-slate-500 text-center py-4">Upload a PDF first to get topic recommendations.</p>
+          ) : (
+            topics.map((topic, i) => {
+              const v = videos[topic];
+              const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(topic + " explained lecture")}`;
+              return (
+                <div key={i} className="rounded-xl border border-gray-100 overflow-hidden">
+                  <div className="flex items-center justify-between px-4 py-2.5 bg-slate-50 border-b border-gray-100">
+                    <p className="text-sm font-semibold text-slate-800">{topic}</p>
+                    <a href={searchUrl} target="_blank" rel="noopener noreferrer"
+                      className="text-xs text-indigo-500 hover:underline flex items-center gap-1">
+                      🔍 Search yourself ↗
+                    </a>
+                  </div>
+                  {v?.loading ? (
+                    <div className="h-20 bg-gray-50 animate-pulse" />
+                  ) : v?.data?.videos?.[0] ? (
+                    <div>
+                      <iframe src={v.data.videos[0].embed_url} title={v.data.videos[0].title}
+                        width="100%" height="200" frameBorder="0"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                        allowFullScreen className="block" />
+                      <div className="px-4 py-2 flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-xs font-medium text-slate-700 line-clamp-1">{v.data.videos[0].title}</p>
+                          <p className="text-[10px] text-slate-400">{v.data.videos[0].channel}</p>
+                        </div>
+                        <a href={v.data.videos[0].watch_url} target="_blank" rel="noopener noreferrer"
+                          className="text-[10px] text-indigo-500 hover:underline shrink-0">Watch on YouTube ↗</a>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="px-4 py-3">
+                      <p className="text-xs text-slate-400">No video found. </p>
+                      <a href={searchUrl} target="_blank" rel="noopener noreferrer"
+                        className="text-xs text-indigo-500 hover:underline">Search YouTube yourself ↗</a>
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        <div className="p-5 border-t border-gray-100">
+          <button onClick={onClose}
+            className="w-full bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-xl py-3 font-bold hover:opacity-90 transition">
+            I'm ready — Start Quiz →
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -39,7 +107,6 @@ function VideoCard({ topic }) {
 export default function Quiz({ onScoreSaved }) {
   const [stage, setStage] = useState("setup");
   const [difficulty, setDifficulty] = useState("medium");
-  // attempts: { easy: 0, medium: 0, hard: 0 }
   const [attempts, setAttempts] = useState({ easy: 0, medium: 0, hard: 0 });
   const [questions, setQuestions] = useState([]);
   const [selected, setSelected] = useState({});
@@ -48,6 +115,7 @@ export default function Quiz({ onScoreSaved }) {
   const [timeLeft, setTimeLeft] = useState(0);
   const [showConfirm, setShowConfirm] = useState(false);
   const [autoSubmitted, setAutoSubmitted] = useState(false);
+  const [showLearn, setShowLearn] = useState(false);
   const timerRef = useRef(null);
 
   useEffect(() => {
@@ -99,22 +167,23 @@ export default function Quiz({ onScoreSaved }) {
     setStage("results");
   };
 
-  const handleSubmitClick = () => setShowConfirm(true);
-  const handleConfirmSubmit = () => { setShowConfirm(false); doSubmit(); };
   const handleGoBack = () => {
     clearInterval(timerRef.current);
-    // refund attempt since they went back
     setAttempts(prev => ({ ...prev, [difficulty]: Math.max(0, prev[difficulty] - 1) }));
     setStage("setup");
   };
 
-  const handleSelect = (qIndex, oIndex) => {
-    setSelected(prev => ({ ...prev, [qIndex]: oIndex }));
-  };
+  const handleSelect = (qIndex, oIndex) => setSelected(prev => ({ ...prev, [qIndex]: oIndex }));
 
   const score = questions.reduce((acc, q, i) => acc + (selected[i] === q.correct_index ? 1 : 0), 0);
   const pct = questions.length ? Math.round((score / questions.length) * 100) : 0;
-  const attemptsLeft = 2 - attempts[difficulty];
+
+  // Weak topics — questions answered wrong, grouped by topic
+  const weakTopics = questions
+    .filter((q, i) => selected[i] !== q.correct_index)
+    .map(q => q.topic)
+    .filter(Boolean)
+    .filter((t, i, arr) => arr.indexOf(t) === i);
 
   const optionStyle = (q, qIndex, oIndex) => {
     const base = "w-full text-left border rounded-xl px-4 py-3 text-sm transition-all flex items-center gap-3";
@@ -125,19 +194,19 @@ export default function Quiz({ onScoreSaved }) {
 
   const resultStyle = (q, qIndex, oIndex) => {
     const base = "px-3 py-2 rounded-lg text-xs flex items-center gap-2 border";
-    const isCorrect = oIndex === q.correct_index;
-    const isSelected = selected[qIndex] === oIndex;
-    if (isCorrect) return `${base} bg-green-50 border-green-200 text-green-700`;
-    if (isSelected) return `${base} bg-red-50 border-red-200 text-red-600`;
+    if (oIndex === q.correct_index) return `${base} bg-green-50 border-green-200 text-green-700`;
+    if (oIndex === selected[qIndex]) return `${base} bg-red-50 border-red-200 text-red-600`;
     return `${base} border-gray-100 text-slate-400`;
   };
 
   // ── SETUP ──
   if (stage === "setup") return (
     <div className="max-w-2xl mx-auto space-y-6">
+      {showLearn && <LearnPanel difficulty={difficulty} onClose={() => setShowLearn(false)} />}
+
       <div>
         <h2 className="text-2xl font-bold text-slate-900">Take a Test</h2>
-        <p className="text-sm mt-1 text-slate-500">Choose difficulty — each level has 2 attempts.</p>
+        <p className="text-sm mt-1 text-slate-500">Choose difficulty. Each level allows 2 attempts.</p>
       </div>
 
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
@@ -148,20 +217,19 @@ export default function Quiz({ onScoreSaved }) {
             const locked = used >= 2;
             return (
               <button key={key} onClick={() => !locked && setDifficulty(key)} disabled={locked}
-                className={`p-4 rounded-xl border-2 text-center transition-all relative
+                className={`p-4 rounded-xl border-2 text-center transition-all
                   ${difficulty === key && !locked ? `${d.border} bg-slate-50` : "border-gray-200 hover:border-gray-300"}
                   ${locked ? "opacity-40 cursor-not-allowed" : ""}`}>
                 <div className={`w-3 h-3 rounded-full ${d.color} mx-auto mb-2`} />
                 <p className="font-semibold text-sm text-slate-800">{d.label}</p>
-                <p className="text-[11px] text-slate-400 mt-1 leading-tight">{d.desc}</p>
-                {/* Attempts indicator */}
+                <p className="text-[11px] text-slate-400 mt-1">{d.desc}</p>
                 <div className="flex justify-center gap-1 mt-2">
                   {[0, 1].map(i => (
                     <div key={i} className={`w-2 h-2 rounded-full ${i < used ? "bg-red-400" : "bg-gray-200"}`} />
                   ))}
                 </div>
-                <p className="text-[10px] text-slate-400 mt-1">
-                  {locked ? "No attempts left" : `${attemptsLeft === 2 && key === difficulty ? "2" : 2 - used} attempt${2 - used === 1 ? "" : "s"} left`}
+                <p className="text-[10px] text-slate-300 mt-1">
+                  {locked ? "No attempts left" : `${2 - used} attempt${2 - used === 1 ? "" : "s"} left`}
                 </p>
               </button>
             );
@@ -171,34 +239,39 @@ export default function Quiz({ onScoreSaved }) {
 
       {error && <p className="text-sm text-red-500 text-center">{error}</p>}
 
-      <button onClick={startQuiz} disabled={loading || attempts[difficulty] >= 2}
-        className="w-full bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-2xl py-4 font-bold text-base hover:opacity-90 disabled:opacity-50 transition shadow-lg">
-        {loading ? "Generating..." : attempts[difficulty] >= 2 ? "No attempts remaining" : `Start ${DIFFICULTY[difficulty].label} Test →`}
-      </button>
+      <div className="flex gap-3">
+        <button onClick={() => setShowLearn(true)}
+          className="flex-1 border-2 border-indigo-300 text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-2xl py-3.5 font-bold text-sm transition">
+          📚 Learn First
+        </button>
+        <button onClick={startQuiz} disabled={loading || attempts[difficulty] >= 2}
+          className="flex-1 bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-2xl py-3.5 font-bold text-sm hover:opacity-90 disabled:opacity-50 transition shadow-lg">
+          {loading ? "Generating..." : attempts[difficulty] >= 2 ? "No attempts left" : `Start ${DIFFICULTY[difficulty].label} →`}
+        </button>
+      </div>
     </div>
   );
 
   // ── QUIZ ──
   if (stage === "quiz") return (
     <div className="max-w-2xl mx-auto space-y-4">
-      {/* Confirm submit modal */}
       {showConfirm && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-xl p-6 max-w-sm w-full">
             <p className="text-lg font-bold text-slate-900 mb-2">Submit Test?</p>
             <p className="text-sm text-slate-500 mb-5">
-              You've answered {Object.keys(selected).length} of {questions.length} questions.
+              You've answered <strong>{Object.keys(selected).length}</strong> of <strong>{questions.length}</strong> questions.
               {Object.keys(selected).length < questions.length && (
                 <span className="text-amber-600 font-medium"> {questions.length - Object.keys(selected).length} unanswered.</span>
-              )} Are you sure?
+              )}
             </p>
             <div className="flex gap-3">
               <button onClick={() => setShowConfirm(false)}
-                className="flex-1 border border-gray-200 rounded-xl py-2.5 text-sm font-medium text-slate-600 hover:bg-gray-50 transition">
+                className="flex-1 border border-gray-200 rounded-xl py-2.5 text-sm font-medium text-slate-600 hover:bg-gray-50">
                 Go Back
               </button>
-              <button onClick={handleConfirmSubmit}
-                className="flex-1 bg-indigo-600 text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-indigo-700 transition">
+              <button onClick={() => { setShowConfirm(false); doSubmit(); }}
+                className="flex-1 bg-indigo-600 text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-indigo-700">
                 Submit
               </button>
             </div>
@@ -206,7 +279,6 @@ export default function Quiz({ onScoreSaved }) {
         </div>
       )}
 
-      {/* Sticky header */}
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 flex items-center justify-between sticky top-4 z-10">
         <div className="flex items-center gap-3">
           <button onClick={handleGoBack}
@@ -216,11 +288,11 @@ export default function Quiz({ onScoreSaved }) {
           <span className="text-xs bg-slate-100 text-slate-600 font-medium px-2.5 py-1 rounded-lg">
             {DIFFICULTY[difficulty].label}
           </span>
-          <span className="text-xs text-slate-400">{Object.keys(selected).length}/{questions.length} answered</span>
+          <span className="text-xs text-slate-400">{Object.keys(selected).length}/{questions.length}</span>
         </div>
         <div className="flex items-center gap-3">
           <span className={`font-mono font-bold text-lg ${timerColor}`}>⏱ {formatTime(timeLeft)}</span>
-          <button onClick={handleSubmitClick}
+          <button onClick={() => setShowConfirm(true)}
             className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold px-4 py-1.5 rounded-xl transition">
             Submit
           </button>
@@ -250,8 +322,8 @@ export default function Quiz({ onScoreSaved }) {
         </div>
       ))}
 
-      <button onClick={handleSubmitClick}
-        className="w-full bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-2xl py-4 font-bold text-base hover:opacity-90 transition shadow-lg">
+      <button onClick={() => setShowConfirm(true)}
+        className="w-full bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-2xl py-4 font-bold hover:opacity-90 transition shadow-lg">
         Submit Test →
       </button>
     </div>
@@ -275,24 +347,38 @@ export default function Quiz({ onScoreSaved }) {
         <p className="text-sm mt-1 text-slate-500">
           {pct >= 80 ? "Excellent! 🎉" : pct >= 50 ? "Good effort 👍" : "Keep studying 📚"}
         </p>
-        <p className="text-xs text-slate-400 mt-2">
-          {DIFFICULTY[difficulty].label} · {attempts[difficulty]}/2 attempts used
-        </p>
-
-        {/* Retake button — shown only if attempts remain */}
+        <p className="text-xs text-slate-300 mt-2">{DIFFICULTY[difficulty].label} · {attempts[difficulty]}/2 attempts used</p>
         <div className="flex gap-3 justify-center mt-5">
           {attempts[difficulty] < 2 && (
-            <button onClick={() => { setStage("setup"); }}
+            <button onClick={() => setStage("setup")}
               className="bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-xl px-5 py-2.5 font-semibold text-sm hover:opacity-90 transition">
-              🔄 Retake {DIFFICULTY[difficulty].label} ({2 - attempts[difficulty]} left)
+              🔄 Retake ({2 - attempts[difficulty]} left)
             </button>
           )}
-          <button onClick={() => { setStage("setup"); setDifficulty("easy"); }}
+          <button onClick={() => { setStage("setup"); }}
             className="border border-gray-200 text-slate-600 rounded-xl px-5 py-2.5 font-semibold text-sm hover:bg-gray-50 transition">
             Try Different Level
           </button>
         </div>
       </div>
+
+      {/* Weak topics panel */}
+      {weakTopics.length > 0 && (
+        <div className="bg-red-50 border border-red-200 rounded-2xl p-5">
+          <p className="text-sm font-bold text-red-700 mb-2">📌 Topics to Review</p>
+          <p className="text-xs text-red-500 mb-3">You got questions wrong on these topics — consider reviewing them before retaking.</p>
+          <div className="flex flex-wrap gap-2">
+            {weakTopics.map((t, i) => (
+              <a key={i}
+                href={`https://www.youtube.com/results?search_query=${encodeURIComponent(t + " explained")}`}
+                target="_blank" rel="noopener noreferrer"
+                className="text-xs bg-white border border-red-200 text-red-600 px-3 py-1.5 rounded-full hover:bg-red-100 transition">
+                {t} ↗
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Full review */}
       <div>
@@ -307,10 +393,12 @@ export default function Quiz({ onScoreSaved }) {
                     ${isCorrect ? "bg-green-100 text-green-600" : "bg-red-100 text-red-600"}`}>
                     {isCorrect ? "✓" : "✗"}
                   </span>
-                  <p className="text-sm font-semibold text-slate-800">{q.question}</p>
+                  <div className="flex-1">
+                    <p className="text-sm font-semibold text-slate-800">{q.question}</p>
+                    {q.topic && <p className="text-[10px] text-slate-400 mt-0.5">Topic: {q.topic}</p>}
+                  </div>
                 </div>
-
-                <div className="space-y-1.5 ml-10 mb-3">
+                <div className="space-y-1.5 ml-10">
                   {q.options.map((opt, oIndex) => (
                     <div key={oIndex} className={resultStyle(q, qIndex, oIndex)}>
                       <span className="font-bold">{["A","B","C","D"][oIndex]}.</span>
@@ -319,17 +407,6 @@ export default function Quiz({ onScoreSaved }) {
                       {oIndex === selected[qIndex] && oIndex !== q.correct_index && <span className="ml-auto shrink-0 text-red-500">Your answer</span>}
                     </div>
                   ))}
-                </div>
-
-                {q.explanation && (
-                  <div className="ml-10 rounded-xl bg-slate-50 border border-slate-100 p-3 text-xs text-slate-600 mb-3">
-                    <span className="font-semibold">💡 </span>{q.explanation}
-                  </div>
-                )}
-
-                <div className="ml-10">
-                  <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-400 mb-2">Reference Video</p>
-                  <VideoCard topic={q.question} />
                 </div>
               </div>
             );
