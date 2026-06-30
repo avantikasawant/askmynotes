@@ -11,9 +11,9 @@ function formatSize(bytes) {
 }
 
 export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
-  const [files, setFiles] = useState([]);         // pending uploads
+  const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [results, setResults] = useState([]);      // upload results
+  const [results, setResults] = useState([]);
   const [dragOver, setDragOver] = useState(false);
   const [previewFile, setPreviewFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
@@ -46,7 +46,6 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
 
     try {
       if (files.length === 1) {
-        // single upload
         const formData = new FormData();
         formData.append("file", files[0]);
         const res = await axios.post(`${API_URL}/upload`, formData, {
@@ -55,15 +54,12 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
         });
         setResults([{ filename: res.data.filename, status: "success", chunks_indexed: res.data.chunks_indexed }]);
       } else {
-        // multi upload
         const formData = new FormData();
         files.forEach(f => formData.append("files", f));
         const res = await axios.post(`${API_URL}/upload/multiple`, formData, {
           headers: { "Content-Type": "multipart/form-data" },
           timeout: 300000,
         });
-        const url = URL.createObjectURL(res.data);
-        setPreviewUrl(url);
         setResults(res.data.results || []);
       }
       setFiles([]);
@@ -85,15 +81,23 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
     setPreviewError("");
     setPreviewLoading(true);
     if (previewUrl) { URL.revokeObjectURL(previewUrl); setPreviewUrl(null); }
+
     try {
       const token = localStorage.getItem("amn_token");
-      const res = await axios.get(`${API_URL}/pdf/${encodeURIComponent(filename)}`, {
+      if (!token) {
+        setPreviewError("Not logged in.");
+        setPreviewLoading(false);
+        return;
+      }
+      const res = await fetch(`${API_URL}/pdf/${encodeURIComponent(filename)}`, {
         headers: { Authorization: `Bearer ${token}` },
-        responseType: "blob",
-        timeout: 30000,
       });
-      setPreviewUrl(URL.createObjectURL(res.data));
-    } catch {
+      if (!res.ok) {
+        throw new Error(`Status ${res.status}`);
+      }
+      const blob = await res.blob();
+      setPreviewUrl(URL.createObjectURL(blob));
+    } catch (err) {
       setPreviewError("PDF not available — files are cleared on server restart. Re-upload to view.");
     } finally {
       setPreviewLoading(false);
@@ -110,7 +114,6 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
         <p className="text-sm mt-1 text-slate-500">Upload one or multiple lecture notes at once (max {MAX_TOTAL_MB}MB total).</p>
       </div>
 
-      {/* Drop zone */}
       {!results.length && (
         <div
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
@@ -147,7 +150,6 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
         </div>
       )}
 
-      {/* File list */}
       {files.length > 0 && !results.length && (
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 space-y-2">
           <div className="flex items-center justify-between mb-2">
@@ -175,7 +177,6 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
         </div>
       )}
 
-      {/* Upload button */}
       {files.length > 0 && !loading && !results.length && (
         <button onClick={handleUpload} disabled={overLimit}
           className="w-full bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-2xl py-3.5 font-bold hover:opacity-90 disabled:opacity-50 transition shadow-lg">
@@ -183,7 +184,6 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
         </button>
       )}
 
-      {/* Results */}
       {results.length > 0 && (
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 space-y-3">
           {successCount > 0 && (
@@ -213,7 +213,6 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
         </div>
       )}
 
-      {/* Previously indexed PDFs */}
       {indexedFiles.length > 0 && (
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
           <p className="text-xs font-semibold uppercase tracking-widest text-slate-400 mb-3">
@@ -257,7 +256,6 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
         </div>
       )}
 
-      {/* How it works */}
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
         <p className="text-xs font-semibold uppercase tracking-widest text-slate-400 mb-4">How it works</p>
         <div className="grid grid-cols-3 gap-4 text-center">
