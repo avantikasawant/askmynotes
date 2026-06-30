@@ -6,20 +6,21 @@ import shutil
 import json
 from fastapi import FastAPI, UploadFile, File, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import StreamingResponse, RedirectResponse
 from pydantic import BaseModel
-from typing import Optional
 import httpx
 
 from rag_pipeline import ingest_pdf, get_answer, list_indexed_files, clear_vectorstore, get_top_chunks, vectorstore
 from quiz import generate_quiz, get_quiz_topics
 from auth.db import (
-    init_db, create_user, get_user_by_email, get_user_by_google_id,
-    verify_password, update_profile, log_activity, save_quiz_attempt, get_dashboard_data
+    init_db, create_user, get_user_by_email, verify_password, update_profile,
+    log_activity, save_quiz_attempt, get_dashboard_data,
+    save_pdf_record, get_user_pdfs, get_pdf_record, delete_pdf_record, delete_all_pdf_records
 )
 from auth.jwt_handler import create_token, decode_token
 from auth.models import UserRegister, UserLogin, GoogleLogin, UserProfile
 from youtube_search import search_youtube_video, search_youtube_videos
+from cloud_storage import upload_pdf_to_cloud, delete_pdf_from_cloud
 
 app = FastAPI(title="AskMyNotes API")
 init_db()
@@ -102,7 +103,7 @@ async def update_user_profile(payload: UserProfile, authorization: str = Header(
     return {"status": "updated"}
 
 
-# ── PDF ───────────────────────────────────────────────────────────────────────
+# ── PDF Upload (Cloudinary persistent storage) ────────────────────────────────
 
 class AskRequest(BaseModel):
     question: str
@@ -113,26 +114,95 @@ async def upload_pdf(file: UploadFile = File(...), authorization: str = Header(d
     claims = get_current_user(authorization)
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
+
     file_path = os.path.join(UPLOAD_DIR, file.filename)
+    contents = await file.read()
     with open(file_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+        f.write(contents)
+
     chunk_count = ingest_pdf(file_path)
+
+    # Upload to Cloudinary for permanent storage
+    public_id = f"{claims['sub'].replace('@', '_').replace('.', '_')}/{file.filename}"
+    try:
+        cloud_result = upload_pdf_to_cloud(file_path, public_id)
+        save_pdf_record(
+            claims["sub"], file.filename, cloud_result["url"], cloud_result["public_id"],
+            len(contents), chunk_count
+        )
+    except Exception as e:
+        # Indexing succeeded even if cloud upload fails — don't block the response
+        print(f"Cloudinary upload failed: {e}")
+
     log_activity(claims["sub"], "uploaded", file.filename)
     return {"status": "success", "filename": file.filename, "chunks_indexed": chunk_count}
 
 
+@app.post("/upload/multiple")
+async def upload_multiple_pdfs(files: list[UploadFile] = File(...), authorization: str = Header(default="")):
+    claims = get_current_user(authorization)
+    MAX_TOTAL_MB = 20
+    total_size = 0
+    results = []
+
+    for file in files:
+        if not file.filename.lower().endswith(".pdf"):
+            results.append({"filename": file.filename, "status": "error", "message": "Not a PDF"})
+            continue
+
+        contents = await file.read()
+        size_mb = len(contents) / (1024 * 1024)
+        total_size += size_mb
+
+        if total_size > MAX_TOTAL_MB:
+            results.append({"filename": file.filename, "status": "error", "message": f"Exceeds {MAX_TOTAL_MB}MB limit"})
+            continue
+
+        file_path = os.path.join(UPLOAD_DIR, file.filename)
+        with open(file_path, "wb") as f:
+            f.write(contents)
+
+        try:
+            chunk_count = ingest_pdf(file_path)
+            public_id = f"{claims['sub'].replace('@', '_').replace('.', '_')}/{file.filename}"
+            try:
+                cloud_result = upload_pdf_to_cloud(file_path, public_id)
+                save_pdf_record(claims["sub"], file.filename, cloud_result["url"], cloud_result["public_id"], len(contents), chunk_count)
+            except Exception as e:
+                print(f"Cloudinary upload failed for {file.filename}: {e}")
+            log_activity(claims["sub"], "uploaded", file.filename)
+            results.append({"filename": file.filename, "status": "success", "chunks_indexed": chunk_count})
+        except Exception as e:
+            results.append({"filename": file.filename, "status": "error", "message": str(e)})
+
+    return {"results": results, "total_files": len(files), "successful": sum(1 for r in results if r["status"] == "success")}
+
+
 @app.get("/pdf/{filename}")
-async def serve_pdf(filename: str, authorization: str = Header(default="")):
-    """Serve PDF file for in-browser preview."""
-    get_current_user(authorization)
-    file_path = os.path.join(UPLOAD_DIR, filename)
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="PDF not found on server. Files are cleared on redeploy.")
-    return FileResponse(
-        file_path,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f"inline; filename={filename}"}
-    )
+async def get_pdf_url(filename: str, authorization: str = Header(default="")):
+    """Redirect to the permanent Cloudinary URL for this PDF."""
+    claims = get_current_user(authorization)
+    record = get_pdf_record(claims["sub"], filename)
+    if not record:
+        raise HTTPException(status_code=404, detail="PDF not found in your library")
+    return RedirectResponse(url=record["cloud_url"])
+
+
+@app.get("/library")
+async def get_library(authorization: str = Header(default="")):
+    """Return full PDF library with metadata for the logged-in user."""
+    claims = get_current_user(authorization)
+    return {"pdfs": get_user_pdfs(claims["sub"])}
+
+
+@app.delete("/library/{filename}")
+async def delete_from_library(filename: str, authorization: str = Header(default="")):
+    claims = get_current_user(authorization)
+    record = get_pdf_record(claims["sub"], filename)
+    if record:
+        delete_pdf_from_cloud(record["public_id"])
+        delete_pdf_record(claims["sub"], filename)
+    return {"status": "deleted"}
 
 
 @app.post("/ask")
@@ -189,7 +259,7 @@ class QuizRequest(BaseModel):
 
 @app.post("/quiz")
 async def quiz_endpoint(payload: QuizRequest = QuizRequest(), authorization: str = Header(default="")):
-    claims = get_current_user(authorization)
+    get_current_user(authorization)
     return generate_quiz(payload.difficulty)
 
 
@@ -206,7 +276,7 @@ async def quiz_topics(difficulty: str = "medium", authorization: str = Header(de
     return get_quiz_topics(difficulty)
 
 
-# ── Files ─────────────────────────────────────────────────────────────────────
+# ── Files (legacy / vectorstore-level) ─────────────────────────────────────────
 
 @app.get("/files")
 async def get_files(authorization: str = Header(default="")):
@@ -216,10 +286,15 @@ async def get_files(authorization: str = Header(default="")):
 
 @app.delete("/files")
 async def clear_files(authorization: str = Header(default="")):
-    get_current_user(authorization)
+    claims = get_current_user(authorization)
     clear_vectorstore()
     for f in os.listdir(UPLOAD_DIR):
         os.remove(os.path.join(UPLOAD_DIR, f))
+    # Also clear cloud storage records for this user
+    pdfs = get_user_pdfs(claims["sub"])
+    for p in pdfs:
+        delete_pdf_from_cloud(p["public_id"])
+    delete_all_pdf_records(claims["sub"])
     return {"status": "cleared"}
 
 
@@ -249,7 +324,6 @@ async def get_video(payload: VideoRequest, authorization: str = Header(default="
 
 @app.post("/videos")
 async def get_videos(payload: VideosRequest, authorization: str = Header(default="")):
-    """Return multiple videos for pre-quiz learning panel."""
     get_current_user(authorization)
     return await search_youtube_videos(payload.topic, max_results=payload.max_results)
 
@@ -283,44 +357,6 @@ Notes: {content}"""
         return {"error": "Failed to generate study guide."}
 
 
-# ── Health ────────────────────────────────────────────────────────────────────
-
 @app.get("/health")
 async def health():
     return {"status": "ok"}
-
-
-# ── Multi PDF Upload ──────────────────────────────────────────────────────────
-
-@app.post("/upload/multiple")
-async def upload_multiple_pdfs(files: list[UploadFile] = File(...), authorization: str = Header(default="")):
-    claims = get_current_user(authorization)
-    MAX_TOTAL_MB = 20
-    total_size = 0
-    results = []
-
-    for file in files:
-        if not file.filename.lower().endswith(".pdf"):
-            results.append({"filename": file.filename, "status": "error", "message": "Not a PDF"})
-            continue
-
-        contents = await file.read()
-        size_mb = len(contents) / (1024 * 1024)
-        total_size += size_mb
-
-        if total_size > MAX_TOTAL_MB:
-            results.append({"filename": file.filename, "status": "error", "message": f"Total upload exceeds {MAX_TOTAL_MB}MB limit"})
-            continue
-
-        file_path = os.path.join(UPLOAD_DIR, file.filename)
-        with open(file_path, "wb") as f:
-            f.write(contents)
-
-        try:
-            chunk_count = ingest_pdf(file_path)
-            log_activity(claims["sub"], "uploaded", file.filename)
-            results.append({"filename": file.filename, "status": "success", "chunks_indexed": chunk_count})
-        except Exception as e:
-            results.append({"filename": file.filename, "status": "error", "message": str(e)})
-
-    return {"results": results, "total_files": len(files), "successful": sum(1 for r in results if r["status"] == "success")}

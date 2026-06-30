@@ -1,13 +1,9 @@
 import { useState, useEffect } from "react";
 import axios from "axios";
 import { useAuth } from "./context/AuthContext";
-import { useTheme } from "./context/ThemeContext";
 import { useToast, ToastContainer } from "./components/Toast";
-import Sidebar from "./components/Sidebar";
 import LoginPage from "./pages/LoginPage";
-import HomePage from "./pages/HomePage";
 import LibraryPage from "./pages/LibraryPage";
-import StudyGuidePage from "./pages/StudyGuidePage";
 import ProfilePage from "./pages/ProfilePage";
 import DashboardPage from "./pages/DashboardPage";
 import Upload from "./components/Upload";
@@ -16,12 +12,19 @@ import Quiz from "./components/Quiz";
 
 const API_URL = import.meta.env.VITE_API_URL;
 
+const TABS = [
+  { id: "upload",    label: "📄", full: "Upload",    desc: "Add PDFs" },
+  { id: "library",   label: "📚", full: "Library",   desc: "Your PDFs" },
+  { id: "qna",       label: "💬", full: "Ask",       desc: "Chat" },
+  { id: "quiz",      label: "🧠", full: "Quiz",      desc: "Test" },
+  { id: "dashboard", label: "📊", full: "Dashboard", desc: "Progress" },
+  { id: "profile",   label: "👤", full: "Profile",   desc: "Account" },
+];
+
 export default function App() {
   const { user, logout, loading } = useAuth();
-  const { dark } = useTheme();
   const { toasts, addToast } = useToast();
-  const [active, setActive] = useState("home");
-  const [collapsed, setCollapsed] = useState(false);
+  const [activeTab, setActiveTab] = useState("upload");
   const [indexedFiles, setIndexedFiles] = useState([]);
 
   const refreshFiles = async () => {
@@ -32,7 +35,7 @@ export default function App() {
   };
 
   const handleClearAll = async () => {
-    if (!window.confirm("Clear all indexed notes?")) return;
+    if (!window.confirm("Clear all indexed notes and your library? This cannot be undone.")) return;
     await axios.delete(`${API_URL}/files`);
     setIndexedFiles([]);
     addToast("All notes cleared", "success");
@@ -41,64 +44,76 @@ export default function App() {
   useEffect(() => { if (user) refreshFiles(); }, [user]);
 
   if (loading) return (
-    <div className={`min-h-screen flex items-center justify-center ${dark ? "bg-slate-900" : "bg-slate-50"}`}>
-      <div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-indigo-50 to-purple-50">
+      <div className="w-10 h-10 border-4 border-indigo-400 border-t-transparent rounded-full animate-spin" />
     </div>
   );
 
-  if (!user) return (
-    <LoginPage onSuccess={(msg) => addToast(msg, "success")} />
-  );
+  if (!user) return <LoginPage onSuccess={(msg) => addToast(msg, "success")} />;
 
-  const sidebarWidth = collapsed ? 64 : 240;
-
-  const pageProps = {
-    home:       <HomePage setActive={setActive} indexedFiles={indexedFiles} />,
-    upload:     <Upload onUploadSuccess={() => { refreshFiles(); addToast("PDF indexed!", "success"); setActive("qna"); }} indexedFiles={indexedFiles} />,
-    library:    <LibraryPage indexedFiles={indexedFiles} onClear={handleClearAll} />,
-    qna:        <QnA />,
-    quiz:       <Quiz onScoreSaved={() => addToast("Score saved!", "success")} />,
-    studyguide: <StudyGuidePage />,
-    dashboard:  <DashboardPage />,
-    profile:    <ProfilePage onSaved={() => addToast("Profile updated!", "success")} onLogout={() => { logout(); addToast("Logged out", "success"); }} />,
-  };
+  const initials = user.name.split(" ").map(w => w[0]).join("").toUpperCase().slice(0, 2);
 
   return (
-    <div className={`flex h-screen overflow-hidden ${dark ? "bg-slate-900" : "bg-slate-50"}`}>
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-indigo-50 to-purple-50">
       <ToastContainer toasts={toasts} />
 
-      <Sidebar active={active} setActive={setActive} collapsed={collapsed} setCollapsed={setCollapsed} />
-
-      {/* Main content */}
-      <main
-        className={`flex-1 overflow-y-auto transition-all duration-300`}
-        style={{ marginLeft: sidebarWidth }}
-      >
-        {/* Top bar */}
-        <div className={`sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b
-          ${dark ? "bg-slate-900/90 border-slate-800" : "bg-slate-50/90 border-slate-200"} backdrop-blur`}>
-          <div>
-            <h1 className={`text-base font-bold capitalize ${dark ? "text-white" : "text-slate-900"}`}>
-              {active === "qna" ? "Ask Questions" : active === "studyguide" ? "Study Guide" : active}
-            </h1>
-            {indexedFiles.length > 0 && (
-              <p className={`text-xs mt-0.5 ${dark ? "text-slate-500" : "text-slate-400"}`}>
-                {indexedFiles.length} PDF{indexedFiles.length > 1 ? "s" : ""} indexed
-              </p>
-            )}
+      <header className="bg-white/80 backdrop-blur border-b border-indigo-100 sticky top-0 z-10">
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold text-xs shadow">AN</div>
+            <div className="hidden sm:block">
+              <h1 className="text-base font-bold text-gray-900 leading-tight">AskMyNotes</h1>
+              <p className="text-[10px] text-gray-400">RAG-powered study assistant</p>
+            </div>
           </div>
-
-          {/* Mobile sidebar toggle */}
-          <button onClick={() => setCollapsed(!collapsed)}
-            className={`sm:hidden p-2 rounded-lg ${dark ? "text-slate-400 hover:text-white" : "text-slate-500 hover:text-slate-900"}`}>
-            ☰
-          </button>
+          <div className="flex items-center gap-2">
+            {indexedFiles.length > 0 && (
+              <div className="hidden sm:flex items-center gap-2">
+                <span className="text-xs text-indigo-500 bg-indigo-50 border border-indigo-100 rounded-full px-2.5 py-0.5">
+                  {indexedFiles.length} PDF{indexedFiles.length > 1 ? "s" : ""}
+                </span>
+                <button onClick={handleClearAll}
+                  className="text-xs text-red-400 hover:text-red-600 border border-red-200 rounded-full px-2.5 py-0.5 transition-colors">
+                  Clear
+                </button>
+              </div>
+            )}
+            <button onClick={() => setActiveTab("profile")}
+              className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white text-xs font-bold shadow hover:opacity-90 transition">
+              {initials}
+            </button>
+          </div>
         </div>
+      </header>
 
-        <div className="p-6">
-          {pageProps[active] || pageProps.home}
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 pt-4">
+        <div className="flex gap-1 sm:gap-1.5 bg-white/70 backdrop-blur rounded-2xl shadow-sm border border-white p-1 sm:p-1.5 overflow-x-auto">
+          {TABS.map((tab) => (
+            <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+              className={`flex flex-col items-center py-2 px-1 sm:px-3 rounded-xl text-xs font-medium transition-all duration-200 flex-1 min-w-0
+                ${activeTab === tab.id ? "bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow-md" : "text-gray-500 hover:bg-gray-50 hover:text-gray-700"}`}>
+              <span className="text-base sm:text-sm">{tab.label}</span>
+              <span className={`hidden sm:block text-[9px] mt-0.5 ${activeTab === tab.id ? "text-indigo-200" : "text-gray-400"}`}>{tab.desc}</span>
+              <span className={`sm:hidden text-[9px] mt-0.5 ${activeTab === tab.id ? "text-indigo-200" : "text-gray-400"}`}>{tab.full}</span>
+            </button>
+          ))}
         </div>
+      </div>
+
+      <main className="max-w-4xl mx-auto px-4 sm:px-6 py-6">
+        {activeTab === "upload" && (
+          <Upload onUploadSuccess={() => { refreshFiles(); addToast("PDF saved to library!", "success"); setActiveTab("qna"); }} indexedFiles={indexedFiles} />
+        )}
+        {activeTab === "library"   && <LibraryPage onRefresh={refreshFiles} />}
+        {activeTab === "qna"       && <QnA />}
+        {activeTab === "quiz"      && <Quiz onScoreSaved={() => addToast("Score saved!", "success")} />}
+        {activeTab === "dashboard" && <DashboardPage />}
+        {activeTab === "profile"   && <ProfilePage onSaved={() => addToast("Profile updated!", "success")} onLogout={() => { logout(); addToast("Logged out", "success"); }} />}
       </main>
+
+      <footer className="text-center py-6 text-[10px] text-gray-300">
+        AskMyNotes · FastEmbed · Groq Llama 3.1 · ChromaDB · Cloudinary · FastAPI
+      </footer>
     </div>
   );
 }

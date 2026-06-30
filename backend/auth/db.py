@@ -1,8 +1,6 @@
 import sqlite3
 import os
 import hashlib
-import json
-from datetime import datetime
 
 DB_PATH = os.getenv("DB_PATH", "askmynotes.db")
 
@@ -41,6 +39,18 @@ def init_db():
             action TEXT NOT NULL,
             detail TEXT DEFAULT '',
             created_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS pdf_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_email TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            cloud_url TEXT NOT NULL,
+            public_id TEXT NOT NULL,
+            size_bytes INTEGER DEFAULT 0,
+            chunks_indexed INTEGER DEFAULT 0,
+            uploaded_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(user_email, filename)
         );
     """)
     conn.commit()
@@ -107,27 +117,22 @@ def save_quiz_attempt(user_email: str, score: int, total: int, topic: str = "Gen
 
 def get_dashboard_data(user_email: str) -> dict:
     conn = get_conn()
-
     attempts = conn.execute(
         "SELECT score, total, topic, created_at FROM quiz_attempts WHERE user_email=? ORDER BY created_at ASC",
         (user_email,)
     ).fetchall()
-
     activity = conn.execute(
         "SELECT action, detail, created_at FROM activity_log WHERE user_email=? ORDER BY created_at DESC LIMIT 20",
         (user_email,)
     ).fetchall()
-
     questions_asked = conn.execute(
         "SELECT COUNT(*) as cnt FROM activity_log WHERE user_email=? AND action='asked'",
         (user_email,)
     ).fetchone()["cnt"]
-
     pdfs_uploaded = conn.execute(
         "SELECT COUNT(*) as cnt FROM activity_log WHERE user_email=? AND action='uploaded'",
         (user_email,)
     ).fetchone()["cnt"]
-
     conn.close()
 
     quiz_list = [dict(a) for a in attempts]
@@ -143,3 +148,48 @@ def get_dashboard_data(user_email: str) -> dict:
         "pdfs_uploaded": pdfs_uploaded,
         "recent_activity": [dict(a) for a in activity],
     }
+
+
+def save_pdf_record(user_email, filename, cloud_url, public_id, size_bytes, chunks_indexed):
+    conn = get_conn()
+    conn.execute(
+        """INSERT INTO pdf_files (user_email, filename, cloud_url, public_id, size_bytes, chunks_indexed)
+           VALUES (?,?,?,?,?,?)
+           ON CONFLICT(user_email, filename) DO UPDATE SET
+             cloud_url=excluded.cloud_url, public_id=excluded.public_id,
+             size_bytes=excluded.size_bytes, chunks_indexed=excluded.chunks_indexed,
+             uploaded_at=datetime('now')""",
+        (user_email, filename, cloud_url, public_id, size_bytes, chunks_indexed)
+    )
+    conn.commit()
+    conn.close()
+
+def get_user_pdfs(user_email: str) -> list:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT filename, cloud_url, public_id, size_bytes, chunks_indexed, uploaded_at FROM pdf_files WHERE user_email=? ORDER BY uploaded_at DESC",
+        (user_email,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_pdf_record(user_email: str, filename: str):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM pdf_files WHERE user_email=? AND filename=?",
+        (user_email, filename)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def delete_pdf_record(user_email: str, filename: str):
+    conn = get_conn()
+    conn.execute("DELETE FROM pdf_files WHERE user_email=? AND filename=?", (user_email, filename))
+    conn.commit()
+    conn.close()
+
+def delete_all_pdf_records(user_email: str):
+    conn = get_conn()
+    conn.execute("DELETE FROM pdf_files WHERE user_email=?", (user_email,))
+    conn.commit()
+    conn.close()

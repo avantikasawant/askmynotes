@@ -15,24 +15,18 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState([]);
   const [dragOver, setDragOver] = useState(false);
-  const [previewFile, setPreviewFile] = useState(null);
-  const [previewUrl, setPreviewUrl] = useState(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewError, setPreviewError] = useState("");
   const inputRef = useRef();
 
   const totalSize = files.reduce((acc, f) => acc + f.size, 0);
   const totalMB = totalSize / (1024 * 1024);
   const overLimit = totalMB > MAX_TOTAL_MB;
-
   const duplicates = files.filter(f => indexedFiles.includes(f.name)).map(f => f.name);
 
   const addFiles = (incoming) => {
     const pdfs = Array.from(incoming).filter(f => f.name.endsWith(".pdf"));
     setFiles(prev => {
       const existing = new Set(prev.map(f => f.name));
-      const newOnes = pdfs.filter(f => !existing.has(f.name));
-      return [...prev, ...newOnes];
+      return [...prev, ...pdfs.filter(f => !existing.has(f.name))];
     });
     setResults([]);
   };
@@ -43,7 +37,6 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
     if (!files.length || overLimit) return;
     setLoading(true);
     setResults([]);
-
     try {
       if (files.length === 1) {
         const formData = new FormData();
@@ -71,39 +64,6 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
     }
   };
 
-  const handlePreview = async (filename) => {
-    if (previewFile === filename) {
-      setPreviewFile(null);
-      setPreviewUrl(null);
-      return;
-    }
-    setPreviewFile(filename);
-    setPreviewError("");
-    setPreviewLoading(true);
-    if (previewUrl) { URL.revokeObjectURL(previewUrl); setPreviewUrl(null); }
-
-    try {
-      const token = localStorage.getItem("amn_token");
-      if (!token) {
-        setPreviewError("Not logged in.");
-        setPreviewLoading(false);
-        return;
-      }
-      const res = await fetch(`${API_URL}/pdf/${encodeURIComponent(filename)}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) {
-        throw new Error(`Status ${res.status}`);
-      }
-      const blob = await res.blob();
-      setPreviewUrl(URL.createObjectURL(blob));
-    } catch (err) {
-      setPreviewError("PDF not available — files are cleared on server restart. Re-upload to view.");
-    } finally {
-      setPreviewLoading(false);
-    }
-  };
-
   const successCount = results.filter(r => r.status === "success").length;
   const hasErrors = results.some(r => r.status === "error");
 
@@ -111,7 +71,7 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
     <div className="max-w-xl mx-auto space-y-6">
       <div>
         <h2 className="text-2xl font-bold text-slate-900">Upload PDFs</h2>
-        <p className="text-sm mt-1 text-slate-500">Upload one or multiple lecture notes at once (max {MAX_TOTAL_MB}MB total).</p>
+        <p className="text-sm mt-1 text-slate-500">Upload one or multiple lecture notes at once (max {MAX_TOTAL_MB}MB total). They're stored permanently in your library.</p>
       </div>
 
       {!results.length && (
@@ -165,15 +125,13 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
               <div className="flex-1 min-w-0">
                 <p className="text-xs font-medium text-slate-700 truncate">{f.name}</p>
                 <p className="text-[10px] text-slate-400">{formatSize(f.size)}
-                  {duplicates.includes(f.name) && <span className="text-amber-600 ml-1">· previously uploaded</span>}
+                  {duplicates.includes(f.name) && <span className="text-amber-600 ml-1">· already in library</span>}
                 </p>
               </div>
               <button onClick={() => removeFile(f.name)} className="text-slate-300 hover:text-red-400 transition text-lg shrink-0">×</button>
             </div>
           ))}
-          {overLimit && (
-            <p className="text-xs text-red-500 text-center pt-1">⚠️ Total size exceeds {MAX_TOTAL_MB}MB. Remove some files.</p>
-          )}
+          {overLimit && <p className="text-xs text-red-500 text-center pt-1">⚠️ Total size exceeds {MAX_TOTAL_MB}MB. Remove some files.</p>}
         </div>
       )}
 
@@ -188,17 +146,13 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 space-y-3">
           {successCount > 0 && (
             <div className="bg-green-50 border border-green-200 rounded-xl p-3 text-center">
-              <p className="text-sm font-semibold text-green-700">
-                ✅ {successCount} file{successCount > 1 ? "s" : ""} indexed successfully
-              </p>
+              <p className="text-sm font-semibold text-green-700">✅ {successCount} file{successCount > 1 ? "s" : ""} indexed and saved to library</p>
               <p className="text-xs text-green-500 mt-0.5">Redirecting...</p>
             </div>
           )}
           {results.map((r, i) => (
             <div key={i} className={`rounded-xl p-3 text-xs border
-              ${r.status === "success"
-                ? "bg-green-50 border-green-200 text-green-700"
-                : "bg-red-50 border-red-200 text-red-600"}`}>
+              ${r.status === "success" ? "bg-green-50 border-green-200 text-green-700" : "bg-red-50 border-red-200 text-red-600"}`}>
               <span className="font-medium">{r.status === "success" ? "✅" : "❌"} {r.filename}</span>
               {r.status === "success" && <span className="ml-2 text-green-500">{r.chunks_indexed} chunks</span>}
               {r.status === "error" && <span className="ml-2">{r.message}</span>}
@@ -213,56 +167,13 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
         </div>
       )}
 
-      {indexedFiles.length > 0 && (
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
-          <p className="text-xs font-semibold uppercase tracking-widest text-slate-400 mb-3">
-            Indexed ({indexedFiles.length})
-          </p>
-          <div className="space-y-2">
-            {indexedFiles.map(f => (
-              <div key={f}>
-                <div className="flex items-center gap-3 p-3 rounded-xl border border-gray-100 hover:bg-slate-50 transition">
-                  <div className="w-8 h-8 rounded-lg bg-indigo-100 flex items-center justify-center text-indigo-600 text-sm shrink-0">📄</div>
-                  <p className="text-sm font-medium text-slate-700 truncate flex-1">{f}</p>
-                  <button onClick={() => handlePreview(f)}
-                    className={`text-xs px-3 py-1.5 rounded-lg font-medium transition shrink-0
-                      ${previewFile === f ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
-                    {previewFile === f ? "Close" : "View PDF"}
-                  </button>
-                </div>
-                {previewFile === f && (
-                  <div className="mt-2 rounded-xl overflow-hidden border border-gray-200">
-                    {previewLoading && (
-                      <div className="flex items-center justify-center h-32 bg-gray-50">
-                        <div className="w-6 h-6 border-4 border-indigo-400 border-t-transparent rounded-full animate-spin" />
-                      </div>
-                    )}
-                    {previewError && (
-                      <div className="p-4 bg-amber-50 border border-amber-100 rounded-xl">
-                        <p className="text-xs text-amber-700">{previewError}</p>
-                        <button onClick={() => handlePreview(f)}
-                          className="mt-2 text-xs text-indigo-500 hover:underline">Re-upload to enable preview</button>
-                      </div>
-                    )}
-                    {previewUrl && (
-                      <iframe src={previewUrl} title={f} width="100%" height="600"
-                        className="block" style={{ border: "none" }} />
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
         <p className="text-xs font-semibold uppercase tracking-widest text-slate-400 mb-4">How it works</p>
         <div className="grid grid-cols-3 gap-4 text-center">
           {[
             { icon: "📑", step: "Parse", desc: "PDF → text per page" },
             { icon: "🔢", step: "Embed", desc: "Chunks → vectors" },
-            { icon: "🗄️", step: "Store", desc: "Vectors → ChromaDB" },
+            { icon: "☁️", step: "Store", desc: "Saved to your library" },
           ].map(s => (
             <div key={s.step} className="flex flex-col items-center gap-1.5">
               <span className="text-2xl">{s.icon}</span>
