@@ -12,19 +12,27 @@ cloudinary.config(
 
 
 def upload_pdf_to_cloud(file_path: str, public_id: str) -> dict:
-    """Upload a PDF to Cloudinary and return its permanent URL + metadata."""
+    """Upload PDF to Cloudinary with public access enabled."""
     result = cloudinary.uploader.upload(
         file_path,
-        resource_type="raw",       # required for non-image files like PDFs
+        resource_type="raw",
         public_id=public_id,
         folder="askmynotes_pdfs",
         overwrite=True,
+        access_mode="public",   # makes the URL publicly accessible without auth
+        type="upload",
     )
+    # Build a direct delivery URL that works in browser
+    cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME")
+    public_id_full = result["public_id"]
+    # Use the fl_attachment:false flag to display inline rather than force download
+    delivery_url = f"https://res.cloudinary.com/{cloud_name}/raw/upload/fl_attachment:false/{public_id_full}"
+
     return {
-        "url": result["secure_url"],
+        "url": delivery_url,
         "public_id": result["public_id"],
         "bytes": result["bytes"],
-        "created_at": result["created_at"],
+        "created_at": result.get("created_at", ""),
     }
 
 
