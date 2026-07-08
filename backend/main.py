@@ -203,7 +203,22 @@ async def delete_from_library(filename: str, authorization: str = Header(default
         delete_pdf_from_cloud(record["public_id"])
         delete_pdf_record(claims["sub"], filename)
     return {"status": "deleted"}
-
+@app.get("/library/{filename}/view")
+async def view_pdf(filename: str, authorization: str = Header(default="")):
+    """Proxy PDF from Cloudinary — bypasses CORS completely."""
+    from fastapi.responses import Response
+    claims = get_current_user(authorization)
+    record = get_pdf_record(claims["sub"], filename)
+    if not record:
+        raise HTTPException(status_code=404, detail="PDF not found")
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(record["cloud_url"], follow_redirects=True)
+            resp.raise_for_status()
+        return Response(content=resp.content, media_type="application/pdf",
+            headers={"Content-Disposition": f"inline; filename={filename}", "Cache-Control": "private, max-age=3600"})
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not fetch PDF: {str(e)}")
 
 @app.post("/ask")
 async def ask_question(payload: AskRequest, authorization: str = Header(default="")):
