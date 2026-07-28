@@ -2,7 +2,9 @@ import sqlite3
 import os
 import hashlib
 
-DB_PATH = os.getenv("DB_PATH", "askmynotes.db")
+# Use /data (Render persistent disk) if available, else local directory
+_DATA_DIR = "/data" if os.path.isdir("/data") else os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.getenv("DB_PATH", os.path.join(_DATA_DIR, "askmynotes.db"))
 
 def get_conn():
     conn = sqlite3.connect(DB_PATH)

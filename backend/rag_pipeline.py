@@ -8,7 +8,10 @@ from langchain_chroma import Chroma
 from langchain.chains import RetrievalQA
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-CHROMA_DIR = os.getenv("CHROMA_DIR", "chroma_db")
+
+# Use /data (Render persistent disk) if available, else local directory
+_DATA_DIR = "/data" if os.path.isdir("/data") else os.path.dirname(os.path.abspath(__file__))
+CHROMA_DIR = os.getenv("CHROMA_DIR", os.path.join(_DATA_DIR, "chroma_db"))
 
 # FastEmbed — lightweight local embeddings, no API key needed
 embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
