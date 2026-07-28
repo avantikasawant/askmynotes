@@ -68,7 +68,7 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
     setUploadProgress(0);
     setStage("uploading");
 
-    const token = localStorage.getItem("token");
+    const token = localStorage.getItem("amn_token");
 
     try {
       if (files.length === 1) {
