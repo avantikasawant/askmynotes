@@ -384,17 +384,3 @@ Notes: {content}"""
 async def health():
     return {"status": "ok"}
 
-
-@app.get("/debug/token")
-async def debug_token(authorization: str = Header(default="")):
-    """Temporary debug endpoint — shows what token the server receives."""
-    if not authorization:
-        return {"received": "NO Authorization header"}
-    if not authorization.startswith("Bearer "):
-        return {"received": authorization[:50], "error": "Does not start with Bearer"}
-    token = authorization.split(" ", 1)[1]
-    try:
-        claims = decode_token(token)
-        return {"received": f"Bearer {token[:20]}...", "valid": True, "email": claims.get("sub")}
-    except ValueError as e:
-        return {"received": f"Bearer {token[:30]}...", "valid": False, "error": str(e)}
