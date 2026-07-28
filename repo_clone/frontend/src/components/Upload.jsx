@@ -4,33 +4,10 @@ import axios from "axios";
 const API_URL = import.meta.env.VITE_API_URL;
 const MAX_TOTAL_MB = 20;
 
-// Supported file types
-const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".pptx", ".txt"];
-const ACCEPT_ATTR = ".pdf,.docx,.pptx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain";
-
 function formatSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function getFileIcon(filename) {
-  const ext = filename.split(".").pop().toLowerCase();
-  if (ext === "pdf")  return "📄";
-  if (ext === "docx") return "📝";
-  if (ext === "pptx") return "📊";
-  if (ext === "txt")  return "📃";
-  return "📁";
-}
-
-function getFileLabel(filename) {
-  const ext = filename.split(".").pop().toUpperCase();
-  return ext;
-}
-
-function isSupported(filename) {
-  const ext = "." + filename.split(".").pop().toLowerCase();
-  return ACCEPTED_EXTENSIONS.includes(ext);
 }
 
 export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
@@ -38,11 +15,6 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState([]);
   const [dragOver, setDragOver] = useState(false);
-
-  // Progress state
-  const [uploadProgress, setUploadProgress] = useState(0); // 0-100 (bytes sent)
-  const [stage, setStage] = useState("idle"); // idle | uploading | indexing | done
-
   const inputRef = useRef();
 
   const totalSize = files.reduce((acc, f) => acc + f.size, 0);
@@ -51,10 +23,10 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
   const duplicates = files.filter(f => indexedFiles.includes(f.name)).map(f => f.name);
 
   const addFiles = (incoming) => {
-    const valid = Array.from(incoming).filter(f => isSupported(f.name));
+    const pdfs = Array.from(incoming).filter(f => f.name.endsWith(".pdf"));
     setFiles(prev => {
       const existing = new Set(prev.map(f => f.name));
-      return [...prev, ...valid.filter(f => !existing.has(f.name))];
+      return [...prev, ...pdfs.filter(f => !existing.has(f.name))];
     });
     setResults([]);
   };
@@ -65,58 +37,27 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
     if (!files.length || overLimit) return;
     setLoading(true);
     setResults([]);
-    setUploadProgress(0);
-    setStage("uploading");
-
-    const token = localStorage.getItem("token");
-
     try {
       if (files.length === 1) {
         const formData = new FormData();
         formData.append("file", files[0]);
-
         const res = await axios.post(`${API_URL}/upload`, formData, {
-          headers: {
-            "Content-Type": "multipart/form-data",
-            Authorization: `Bearer ${token}`,
-          },
+          headers: { "Content-Type": "multipart/form-data" },
           timeout: 180000,
-          onUploadProgress: (e) => {
-            if (e.total) {
-              const pct = Math.round((e.loaded / e.total) * 100);
-              setUploadProgress(pct);
-              if (pct === 100) setStage("indexing");
-            }
-          },
         });
-        setStage("done");
         setResults([{ filename: res.data.filename, status: "success", chunks_indexed: res.data.chunks_indexed }]);
       } else {
         const formData = new FormData();
         files.forEach(f => formData.append("files", f));
-
         const res = await axios.post(`${API_URL}/upload/multiple`, formData, {
-          headers: {
-            "Content-Type": "multipart/form-data",
-            Authorization: `Bearer ${token}`,
-          },
+          headers: { "Content-Type": "multipart/form-data" },
           timeout: 300000,
-          onUploadProgress: (e) => {
-            if (e.total) {
-              const pct = Math.round((e.loaded / e.total) * 100);
-              setUploadProgress(pct);
-              if (pct === 100) setStage("indexing");
-            }
-          },
         });
-        setStage("done");
         setResults(res.data.results || []);
       }
-
       setFiles([]);
       setTimeout(() => onUploadSuccess?.(), 1500);
     } catch (err) {
-      setStage("idle");
       setResults([{ filename: "Upload", status: "error", message: err.response?.data?.detail || "Upload failed. Please try again." }]);
     } finally {
       setLoading(false);
@@ -129,18 +70,8 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
   return (
     <div className="max-w-xl mx-auto space-y-6">
       <div>
-        <h2 className="text-2xl font-bold text-slate-900">Upload Notes</h2>
-        <p className="text-sm mt-1 text-slate-500">
-          Upload lecture notes in any format — PDF, Word, PowerPoint, or plain text (max {MAX_TOTAL_MB}MB total).
-        </p>
-        {/* Supported formats badge row */}
-        <div className="flex gap-2 mt-2 flex-wrap">
-          {[["📄", "PDF"], ["📝", "DOCX"], ["📊", "PPTX"], ["📃", "TXT"]].map(([icon, label]) => (
-            <span key={label} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600 text-xs font-semibold border border-indigo-100">
-              {icon} {label}
-            </span>
-          ))}
-        </div>
+        <h2 className="text-2xl font-bold text-slate-900">Upload PDFs</h2>
+        <p className="text-sm mt-1 text-slate-500">Upload one or multiple lecture notes at once (max {MAX_TOTAL_MB}MB total). They're stored permanently in your library.</p>
       </div>
 
       {!results.length && (
@@ -152,40 +83,17 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
           className={`border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer transition-all
             ${dragOver ? "border-indigo-500 bg-indigo-50 scale-[1.01]" : "border-gray-300 hover:border-indigo-400 hover:bg-indigo-50/30"}`}
         >
-          <input ref={inputRef} type="file" accept={ACCEPT_ATTR} multiple className="hidden"
+          <input ref={inputRef} type="file" accept="application/pdf" multiple className="hidden"
             onChange={(e) => addFiles(e.target.files)} />
-
           {loading ? (
-            <div className="flex flex-col items-center gap-4">
-              {/* Progress bar */}
-              <div className="w-full max-w-xs">
-                <div className="flex justify-between text-xs font-medium mb-1">
-                  <span className={`${stage === "uploading" ? "text-indigo-600" : "text-slate-400"}`}>
-                    {stage === "uploading" ? `Uploading… ${uploadProgress}%` : "Uploaded ✓"}
-                  </span>
-                  <span className={`${stage === "indexing" ? "text-purple-600 animate-pulse" : "text-slate-300"}`}>
-                    {stage === "indexing" ? "Indexing…" : "Indexing"}
-                  </span>
-                </div>
-                <div className="w-full bg-gray-100 rounded-full h-2.5 overflow-hidden">
-                  <div
-                    className={`h-2.5 rounded-full transition-all duration-300 ${
-                      stage === "indexing"
-                        ? "bg-gradient-to-r from-purple-500 to-indigo-500 animate-pulse w-full"
-                        : "bg-gradient-to-r from-indigo-500 to-purple-600"
-                    }`}
-                    style={{ width: stage === "indexing" ? "100%" : `${uploadProgress}%` }}
-                  />
-                </div>
-              </div>
-              <p className="text-xs text-slate-400">
-                {stage === "uploading" && "Sending file to server…"}
-                {stage === "indexing" && "Creating embeddings — this may take 1-2 minutes"}
-              </p>
+            <div className="flex flex-col items-center gap-3">
+              <div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+              <p className="text-sm font-medium text-indigo-600">Processing and indexing...</p>
+              <p className="text-xs text-slate-400">This may take 1-2 minutes</p>
             </div>
           ) : files.length > 0 ? (
             <div className="flex flex-col items-center gap-2">
-              <span className="text-3xl">{files.length === 1 ? getFileIcon(files[0].name) : "📚"}</span>
+              <span className="text-3xl">📄</span>
               <p className="text-sm font-medium text-slate-700">{files.length} file{files.length > 1 ? "s" : ""} selected</p>
               <p className="text-xs text-slate-400">{formatSize(totalSize)} total</p>
               <p className="text-xs text-indigo-500 hover:underline">+ Add more files</p>
@@ -194,9 +102,9 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
             <div className="flex flex-col items-center gap-2">
               <span className="text-5xl">☁️</span>
               <p className="text-sm font-medium text-slate-600">
-                Drag & drop files, or <span className="text-indigo-500 underline">browse</span>
+                Drag & drop PDFs, or <span className="text-indigo-500 underline">browse</span>
               </p>
-              <p className="text-xs text-slate-400">PDF · DOCX · PPTX · TXT · Max {MAX_TOTAL_MB}MB total</p>
+              <p className="text-xs text-slate-400">Multiple files supported · Max {MAX_TOTAL_MB}MB total</p>
             </div>
           )}
         </div>
@@ -213,17 +121,14 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
           {files.map(f => (
             <div key={f.name} className={`flex items-center gap-3 p-2.5 rounded-xl border
               ${duplicates.includes(f.name) ? "border-amber-200 bg-amber-50" : "border-gray-100"}`}>
-              <span className="text-lg">{getFileIcon(f.name)}</span>
+              <span className="text-lg">📄</span>
               <div className="flex-1 min-w-0">
                 <p className="text-xs font-medium text-slate-700 truncate">{f.name}</p>
-                <p className="text-[10px] text-slate-400">
-                  {getFileLabel(f.name)} · {formatSize(f.size)}
+                <p className="text-[10px] text-slate-400">{formatSize(f.size)}
                   {duplicates.includes(f.name) && <span className="text-amber-600 ml-1">· already in library</span>}
                 </p>
               </div>
-              {!loading && (
-                <button onClick={() => removeFile(f.name)} className="text-slate-300 hover:text-red-400 transition text-lg shrink-0">×</button>
-              )}
+              <button onClick={() => removeFile(f.name)} className="text-slate-300 hover:text-red-400 transition text-lg shrink-0">×</button>
             </div>
           ))}
           {overLimit && <p className="text-xs text-red-500 text-center pt-1">⚠️ Total size exceeds {MAX_TOTAL_MB}MB. Remove some files.</p>}
@@ -242,19 +147,19 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
           {successCount > 0 && (
             <div className="bg-green-50 border border-green-200 rounded-xl p-3 text-center">
               <p className="text-sm font-semibold text-green-700">✅ {successCount} file{successCount > 1 ? "s" : ""} indexed and saved to library</p>
-              <p className="text-xs text-green-500 mt-0.5">Redirecting…</p>
+              <p className="text-xs text-green-500 mt-0.5">Redirecting...</p>
             </div>
           )}
           {results.map((r, i) => (
             <div key={i} className={`rounded-xl p-3 text-xs border
               ${r.status === "success" ? "bg-green-50 border-green-200 text-green-700" : "bg-red-50 border-red-200 text-red-600"}`}>
               <span className="font-medium">{r.status === "success" ? "✅" : "❌"} {r.filename}</span>
-              {r.status === "success" && <span className="ml-2 text-green-500">{r.chunks_indexed} chunks indexed</span>}
+              {r.status === "success" && <span className="ml-2 text-green-500">{r.chunks_indexed} chunks</span>}
               {r.status === "error" && <span className="ml-2">{r.message}</span>}
             </div>
           ))}
           {hasErrors && (
-            <button onClick={() => { setResults([]); setFiles([]); setStage("idle"); }}
+            <button onClick={() => { setResults([]); setFiles([]); }}
               className="w-full border border-red-200 text-red-500 hover:bg-red-50 rounded-xl py-2.5 text-sm font-medium transition">
               Try Again
             </button>
@@ -266,8 +171,8 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
         <p className="text-xs font-semibold uppercase tracking-widest text-slate-400 mb-4">How it works</p>
         <div className="grid grid-cols-3 gap-4 text-center">
           {[
-            { icon: "📑", step: "Parse", desc: "Notes → text per page/slide" },
-            { icon: "🔢", step: "Embed", desc: "Chunks → your private vectors" },
+            { icon: "📑", step: "Parse", desc: "PDF → text per page" },
+            { icon: "🔢", step: "Embed", desc: "Chunks → vectors" },
             { icon: "☁️", step: "Store", desc: "Saved to your library" },
           ].map(s => (
             <div key={s.step} className="flex flex-col items-center gap-1.5">

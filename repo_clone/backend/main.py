@@ -10,20 +10,21 @@ from fastapi.responses import StreamingResponse, RedirectResponse
 from pydantic import BaseModel
 import httpx
 
-from rag_pipeline import (
-    ingest_document, get_answer, list_indexed_files, clear_vectorstore,
-    get_top_chunks, get_user_vectorstore,
-)
+from rag_pipeline import ingest_pdf, get_answer, list_indexed_files, clear_vectorstore, get_top_chunks, vectorstore
 from quiz import generate_quiz, get_quiz_topics
 from auth.db import (
     init_db, create_user, get_user_by_email, verify_password, update_profile,
     log_activity, save_quiz_attempt, get_dashboard_data,
-    save_pdf_record, get_user_pdfs, get_pdf_record, delete_pdf_record, delete_all_pdf_records
+    save_pdf_record, get_user_pdfs, get_pdf_record, delete_pdf_record, delete_all_pdf_records,
+    update_password, create_password_reset, get_password_reset, mark_password_reset_used
 )
 from auth.jwt_handler import create_token, decode_token
-from auth.models import UserRegister, UserLogin, GoogleLogin, UserProfile
+from auth.models import UserRegister, UserLogin, GoogleLogin, UserProfile, ForgotPasswordRequest, ResetPasswordRequest
+from auth.mailer import send_login_alert, send_password_reset
 from youtube_search import search_youtube_video, search_youtube_videos
 from cloud_storage import upload_pdf_to_cloud, delete_pdf_from_cloud
+import secrets
+from datetime import datetime, timedelta
 
 app = FastAPI(title="AskMyNotes API")
 init_db()
@@ -39,8 +40,6 @@ app.add_middleware(
 UPLOAD_DIR = "uploaded_pdfs"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/tokeninfo"
-SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".txt"}
-SUPPORTED_LABEL = ".pdf, .docx, .pptx, .txt"
 
 
 def get_current_user(authorization: str = "") -> dict:
@@ -57,20 +56,41 @@ def get_current_user(authorization: str = "") -> dict:
 
 @app.post("/auth/register")
 async def register(payload: UserRegister):
+    if not payload.name.strip():
+        raise HTTPException(status_code=400, detail="Please enter your full name")
+    if not payload.email.strip():
+        raise HTTPException(status_code=400, detail="Please enter your email")
+    if not payload.password or len(payload.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    if get_user_by_email(payload.email):
+        raise HTTPException(status_code=409, detail="An account with this email already exists. Try logging in instead.")
     ok = create_user(payload.name, payload.email, payload.password, payload.mobile)
     if not ok:
-        raise HTTPException(status_code=400, detail="Email already registered")
+        raise HTTPException(status_code=409, detail="An account with this email already exists. Try logging in instead.")
     token = create_token(payload.email, payload.name)
     log_activity(payload.email, "registered")
+    send_login_alert(payload.email, payload.name)
     return {"token": token, "name": payload.name, "email": payload.email}
 
 
 @app.post("/auth/login")
 async def login(payload: UserLogin):
-    if not verify_password(payload.email, payload.password):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not payload.email.strip():
+        raise HTTPException(status_code=400, detail="Please enter your email")
+    if not payload.password:
+        raise HTTPException(status_code=400, detail="Please enter your password")
+
     user = get_user_by_email(payload.email)
+    if not user:
+        raise HTTPException(status_code=404, detail="No account found for this email. Would you like to create one?")
+    if not user["password_hash"]:
+        raise HTTPException(status_code=400, detail="This account uses Google Sign-In. Please continue with Google instead.")
+    if not verify_password(payload.email, payload.password):
+        raise HTTPException(status_code=401, detail="Incorrect password")
+
     token = create_token(payload.email, user["name"])
+    log_activity(payload.email, "login")
+    send_login_alert(user["email"], user["name"])
     return {"token": token, "name": user["name"], "email": payload.email}
 
 
@@ -89,7 +109,45 @@ async def google_login(payload: GoogleLogin):
         create_user(name, email, "", "", google_id)
         log_activity(email, "registered", "google")
     token = create_token(email, name)
+    log_activity(email, "login", "google")
+    send_login_alert(email, name)
     return {"token": token, "name": name, "email": email}
+
+
+@app.post("/auth/forgot-password")
+async def forgot_password(payload: ForgotPasswordRequest):
+    user = get_user_by_email(payload.email)
+    if not user:
+        raise HTTPException(status_code=404, detail="No account found for this email")
+    if not user["password_hash"]:
+        raise HTTPException(status_code=400, detail="This account uses Google Sign-In and has no password to reset")
+
+    token = secrets.token_urlsafe(32)
+    expires_at = (datetime.utcnow() + timedelta(minutes=30)).isoformat()
+    create_password_reset(payload.email, token, expires_at)
+
+    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+    reset_link = f"{frontend_url}/reset-password?token={token}"
+    send_password_reset(user["email"], user["name"], reset_link)
+
+    return {"message": "A password reset link has been sent to your email"}
+
+
+@app.post("/auth/reset-password")
+async def reset_password(payload: ResetPasswordRequest):
+    record = get_password_reset(payload.token)
+    if not record:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset link")
+    if record["used"]:
+        raise HTTPException(status_code=400, detail="This reset link has already been used")
+    if datetime.utcnow() > datetime.fromisoformat(record["expires_at"]):
+        raise HTTPException(status_code=400, detail="This reset link has expired. Please request a new one.")
+    if not payload.new_password or len(payload.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+
+    update_password(record["email"], payload.new_password)
+    mark_password_reset_used(payload.token)
+    return {"message": "Password updated successfully. You can now log in."}
 
 
 @app.get("/auth/me")
@@ -117,16 +175,15 @@ class AskRequest(BaseModel):
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...), authorization: str = Header(default="")):
     claims = get_current_user(authorization)
-    ext = os.path.splitext(file.filename)[1].lower()
-    if ext not in SUPPORTED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail=f"Unsupported file type. Supported: {SUPPORTED_LABEL}")
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported")
 
     file_path = os.path.join(UPLOAD_DIR, file.filename)
     contents = await file.read()
     with open(file_path, "wb") as f:
         f.write(contents)
 
-    chunk_count = ingest_document(file_path, claims["sub"])
+    chunk_count = ingest_pdf(file_path)
 
     # Upload to Cloudinary for permanent storage
     public_id = f"{claims['sub'].replace('@', '_').replace('.', '_')}/{file.filename}"
@@ -152,9 +209,8 @@ async def upload_multiple_pdfs(files: list[UploadFile] = File(...), authorizatio
     results = []
 
     for file in files:
-        ext = os.path.splitext(file.filename)[1].lower()
-        if ext not in SUPPORTED_EXTENSIONS:
-            results.append({"filename": file.filename, "status": "error", "message": f"Unsupported type. Use: {SUPPORTED_LABEL}"})
+        if not file.filename.lower().endswith(".pdf"):
+            results.append({"filename": file.filename, "status": "error", "message": "Not a PDF"})
             continue
 
         contents = await file.read()
@@ -170,7 +226,7 @@ async def upload_multiple_pdfs(files: list[UploadFile] = File(...), authorizatio
             f.write(contents)
 
         try:
-            chunk_count = ingest_document(file_path, claims["sub"])
+            chunk_count = ingest_pdf(file_path)
             public_id = f"{claims['sub'].replace('@', '_').replace('.', '_')}/{file.filename}"
             try:
                 cloud_result = upload_pdf_to_cloud(file_path, public_id)
@@ -210,29 +266,14 @@ async def delete_from_library(filename: str, authorization: str = Header(default
         delete_pdf_from_cloud(record["public_id"])
         delete_pdf_record(claims["sub"], filename)
     return {"status": "deleted"}
-@app.get("/library/{filename}/view")
-async def view_pdf(filename: str, authorization: str = Header(default="")):
-    """Proxy PDF from Cloudinary — bypasses CORS completely."""
-    from fastapi.responses import Response
-    claims = get_current_user(authorization)
-    record = get_pdf_record(claims["sub"], filename)
-    if not record:
-        raise HTTPException(status_code=404, detail="PDF not found")
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(record["cloud_url"], follow_redirects=True)
-            resp.raise_for_status()
-        return Response(content=resp.content, media_type="application/pdf",
-            headers={"Content-Disposition": f"inline; filename={filename}", "Cache-Control": "private, max-age=3600"})
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Could not fetch PDF: {str(e)}")
+
 
 @app.post("/ask")
 async def ask_question(payload: AskRequest, authorization: str = Header(default="")):
     claims = get_current_user(authorization)
     if not payload.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
-    result = get_answer(payload.question, claims["sub"])
+    result = get_answer(payload.question)
     log_activity(claims["sub"], "asked", payload.question[:100])
     return result
 
@@ -246,8 +287,7 @@ async def ask_stream(payload: AskRequest, authorization: str = Header(default=""
     from langchain_groq import ChatGroq
     log_activity(claims["sub"], "asked", payload.question[:100])
 
-    vs = get_user_vectorstore(claims["sub"])
-    retriever = vs.as_retriever(search_type="mmr", search_kwargs={"k": 6, "fetch_k": 12})
+    retriever = vectorstore.as_retriever(search_type="mmr", search_kwargs={"k": 6, "fetch_k": 12})
     docs = retriever.invoke(payload.question)
     context = "\n\n".join(d.page_content for d in docs)
 
@@ -282,8 +322,8 @@ class QuizRequest(BaseModel):
 
 @app.post("/quiz")
 async def quiz_endpoint(payload: QuizRequest = QuizRequest(), authorization: str = Header(default="")):
-    claims = get_current_user(authorization)
-    return generate_quiz(claims["sub"], payload.difficulty)
+    get_current_user(authorization)
+    return generate_quiz(payload.difficulty)
 
 
 @app.post("/quiz/save")
@@ -295,22 +335,22 @@ async def save_quiz(score: int, total: int, authorization: str = Header(default=
 
 @app.get("/quiz/topics")
 async def quiz_topics(difficulty: str = "medium", authorization: str = Header(default="")):
-    claims = get_current_user(authorization)
-    return get_quiz_topics(claims["sub"], difficulty)
+    get_current_user(authorization)
+    return get_quiz_topics(difficulty)
 
 
 # ── Files (legacy / vectorstore-level) ─────────────────────────────────────────
 
 @app.get("/files")
 async def get_files(authorization: str = Header(default="")):
-    claims = get_current_user(authorization)
-    return {"files": list_indexed_files(claims["sub"])}
+    get_current_user(authorization)
+    return {"files": list_indexed_files()}
 
 
 @app.delete("/files")
 async def clear_files(authorization: str = Header(default="")):
     claims = get_current_user(authorization)
-    clear_vectorstore(claims["sub"])
+    clear_vectorstore()
     for f in os.listdir(UPLOAD_DIR):
         os.remove(os.path.join(UPLOAD_DIR, f))
     # Also clear cloud storage records for this user
@@ -355,8 +395,8 @@ async def get_videos(payload: VideosRequest, authorization: str = Header(default
 
 @app.post("/study-guide")
 async def study_guide(authorization: str = Header(default="")):
-    claims = get_current_user(authorization)
-    content = get_top_chunks(claims["sub"], k=10)
+    get_current_user(authorization)
+    content = get_top_chunks(k=10)
     if not content.strip():
         return {"error": "No notes uploaded yet."}
     from groq import Groq

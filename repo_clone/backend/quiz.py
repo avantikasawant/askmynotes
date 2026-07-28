@@ -13,8 +13,8 @@ DIFFICULTY_INSTRUCTIONS = {
     "hard":   "Test deep understanding and analysis. Use nuanced distractors.",
 }
 
-def generate_quiz(user_email: str, difficulty: str = "medium") -> dict:
-    content = get_top_chunks(user_email, k=10)
+def generate_quiz(difficulty: str = "medium") -> dict:
+    content = get_top_chunks(k=10)
     if not content.strip():
         return {"error": "No notes have been uploaded yet."}
 
@@ -57,9 +57,9 @@ Lecture notes:
         return {"error": "Failed to parse quiz response."}
 
 
-def get_quiz_topics(user_email: str, difficulty: str = "medium") -> dict:
+def get_quiz_topics(difficulty: str = "medium") -> dict:
     """Extract main topics from notes for pre-quiz learning videos."""
-    content = get_top_chunks(user_email, k=8)
+    content = get_top_chunks(k=8)
     if not content.strip():
         return {"error": "No notes uploaded."}
 
