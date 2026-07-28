@@ -1,5 +1,6 @@
 import { useState, useRef } from "react";
 import axios from "axios";
+import { useAuth } from "../context/AuthContext";
 
 const API_URL = import.meta.env.VITE_API_URL;
 const MAX_TOTAL_MB = 20;
@@ -34,6 +35,7 @@ function isSupported(filename) {
 }
 
 export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
+  const { user } = useAuth();
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState([]);
@@ -68,7 +70,7 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
     setUploadProgress(0);
     setStage("uploading");
 
-    const token = localStorage.getItem("amn_token");
+    const token = user?.token;
 
     try {
       if (files.length === 1) {
