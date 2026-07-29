@@ -1,126 +1,209 @@
-# AskMyNotes
+# AskMyNotes 🎓
 
-AskMyNotes is a RAG-based study assistant. Upload a lecture PDF and:
-1. Ask questions about it and get answers with page citations.
-2. Generate a 5-question MCQ quiz from the content.
+An AI-powered study assistant that lets you **ask questions about your own lecture notes** and get cited answers instantly.
 
-## Architecture
+🌐 **Live Demo:** [askmynotes.vercel.app](https://askmynotes.vercel.app)  
+🔧 **Backend API:** [askmynotes-jt4o.onrender.com](https://askmynotes-jt4o.onrender.com)
+
+---
+
+## ✨ Features
+
+- **📄 Multi-format Upload** — PDF, DOCX, PPTX, TXT (up to 20 MB)
+- **💬 Q&A with Citations** — Ask anything; get answers grounded in your notes with page-level source references
+- **⚡ Streaming Responses** — Answers stream token-by-token in real time
+- **🧠 MCQ Quiz Generator** — Auto-generate 5-question quizzes from your notes with instant feedback
+- **📚 Study Guide** — AI-generated topic breakdown with priority ranking and study tips
+- **📺 YouTube Recommendations** — Relevant video suggestions per topic
+- **📊 Dashboard** — Track quiz scores, questions asked, and activity over time
+- **🌙 Dark / Light Mode**
+- **🔐 Auth** — Email/password + Google OAuth
+
+---
+
+## 🏗️ Architecture
 
 ```
-┌────────────────┐      ┌──────────────────────┐      ┌───────────────┐
-│   React UI      │ ───▶ │   FastAPI Backend     │ ───▶ │   ChromaDB     │
-│ (Vite+Tailwind) │ ◀─── │ (LangChain + OpenAI)  │ ◀─── │ (vector store) │
-└────────────────┘      └──────────────────────┘      └───────────────┘
+                        ┌─────────────────────────────────────┐
+                        │           React (Vite)               │
+                        │         Vercel Deployment            │
+                        └────────────────┬────────────────────┘
+                                         │ HTTPS
+                        ┌────────────────▼────────────────────┐
+                        │         FastAPI Backend              │
+                        │         Render Deployment            │
+                        │                                      │
+                        │  ┌─────────────────────────────┐    │
+                        │  │      Advanced RAG Pipeline   │    │
+                        │  │                              │    │
+                        │  │  Query                       │    │
+                        │  │    ↓                         │    │
+                        │  │  Hybrid Retrieval            │    │
+                        │  │  ├─ BM25 (keyword, 40%)     │    │
+                        │  │  └─ Dense MMR (semantic,60%) │    │
+                        │  │    ↓                         │    │
+                        │  │  Flashrank Re-ranking        │    │
+                        │  │    ↓                         │    │
+                        │  │  Llama 3.1 8B (Groq)        │    │
+                        │  └─────────────────────────────┘    │
+                        │                                      │
+                        │  ChromaDB ── SQLite ── FastEmbed     │
+                        └─────────────────────────────────────┘
 ```
 
-- **Upload**: PDF is parsed with `PyPDFLoader`, split into 500-char chunks (50 overlap), embedded with OpenAI `text-embedding-3-small`, and stored in ChromaDB.
-- **Ask**: User question is embedded, top-4 relevant chunks retrieved, answered by GPT-4o with page numbers returned.
-- **Quiz**: Top chunks retrieved and sent to GPT-4o, which returns 5 MCQs as strict JSON.
+### RAG Pipeline (Advanced RAG)
 
-## Screenshots
+| Stage | Method | Detail |
+|-------|--------|--------|
+| **Chunking** | Recursive character split | 600 chars, 100 overlap |
+| **Embeddings** | BGE-small-en-v1.5 (local) | Via FastEmbed, no API key |
+| **Storage** | ChromaDB (per-user collections) | Isolated by email hash |
+| **Retrieval** | Hybrid: BM25 (40%) + Dense MMR (60%) | Keyword + semantic |
+| **Re-ranking** | Flashrank cross-encoder | Top 5 from 10 candidates |
+| **Generation** | Llama 3.1 8B Instant (Groq) | Temperature 0, streaming |
 
-> _Add screenshots here_
-- `docs/screenshot-upload.png`
-- `docs/screenshot-qna.png`
-- `docs/screenshot-quiz.png`
+---
 
-## Local Development
+## 🛠️ Tech Stack
+
+**Backend**
+- [FastAPI](https://fastapi.tiangolo.com/) — API framework
+- [LangChain](https://langchain.com/) — RAG orchestration
+- [ChromaDB](https://www.trychroma.com/) — Vector store
+- [FastEmbed](https://github.com/qdrant/fastembed) — Local embeddings (BAAI/bge-small-en-v1.5)
+- [Groq](https://groq.com/) — LLM inference (Llama 3.1 8B)
+- [Flashrank](https://github.com/PrithivirajDamodaran/FlashRank) — Cross-encoder re-ranking
+- [rank_bm25](https://github.com/dorianbrown/rank_bm25) — BM25 keyword retrieval
+- SQLite — User data, quiz scores, activity log
+
+**Frontend**
+- [React](https://react.dev/) + [Vite](https://vitejs.dev/)
+- Vanilla CSS with dark mode
+- Axios + Server-Sent Events (SSE) for streaming
+
+**Infrastructure**
+- Backend → [Render](https://render.com/) (free tier)
+- Frontend → [Vercel](https://vercel.com/)
+- CI → GitHub Actions
+
+---
+
+## 🚀 Local Development
 
 ### Prerequisites
-- Python 3.11
-- Node.js 20
-- Docker (optional, for containerized run)
-- OpenAI API key
+- Python 3.11+
+- Node.js 20+
+- [Groq API key](https://console.groq.com/) (free)
 
 ### Backend
+
 ```bash
 cd backend
-cp .env.example .env   # add your OPENAI_API_KEY
+
+# Create and activate virtual environment
 python -m venv venv
-source venv/bin/activate
+venv\Scripts\activate        # Windows
+# source venv/bin/activate   # Mac/Linux
+
+# Install dependencies
 pip install -r requirements.txt
+
+# Set up environment variables
+cp .env.example .env
+# Edit .env and add your GROQ_API_KEY
+
+# Run the server
 uvicorn main:app --reload
 ```
 
+Visit `http://localhost:8000/health` → should return `{"status":"ok"}`
+
 ### Frontend
+
 ```bash
 cd frontend
-cp .env.example .env
+
 npm install
+
+# Set API URL
+echo "VITE_API_URL=http://localhost:8000" > .env
+
 npm run dev
 ```
 
-### Using Docker Compose
-```bash
-docker compose up --build
+Visit `http://localhost:5173`
+
+---
+
+## 🔑 Environment Variables
+
+### Backend (`.env`)
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `GROQ_API_KEY` | ✅ | Groq API key — get one free at console.groq.com |
+| `JWT_SECRET` | ✅ | Secret key for signing JWT tokens (any long random string) |
+| `GOOGLE_CLIENT_ID` | ⚠️ Optional | For Google OAuth login |
+| `CHROMA_DIR` | ❌ | ChromaDB path (default: `chroma_db`) |
+| `DB_PATH` | ❌ | SQLite path (default: `askmynotes.db`) |
+
+### Frontend (`.env`)
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `VITE_API_URL` | ✅ | Backend URL (e.g. `https://askmynotes-jt4o.onrender.com`) |
+
+---
+
+## ☁️ Deployment
+
+### Backend → Render
+1. Push to GitHub
+2. Create a new **Web Service** on Render → connect your repo
+3. Set **Root Directory** to `backend`
+4. Set **Build Command**: `pip install -r requirements.txt`
+5. Set **Start Command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+6. Add environment variables: `GROQ_API_KEY`, `JWT_SECRET`
+7. Deploy
+
+### Frontend → Vercel
+1. Import the repo on Vercel
+2. Set **Root Directory** to `frontend`
+3. Add environment variable: `VITE_API_URL=https://<your-render-url>`
+4. Deploy
+
+> **Note:** Render's free tier spins down after 15 min of inactivity. The first request after that takes ~30-50 seconds to wake up.
+
+---
+
+## 📁 Project Structure
+
+```
+askmynotes/
+├── backend/
+│   ├── main.py              # FastAPI app & all endpoints
+│   ├── rag_pipeline.py      # Advanced RAG: hybrid search + re-ranking
+│   ├── quiz.py              # MCQ quiz generation
+│   ├── youtube_search.py    # YouTube video recommendations
+│   ├── cloud_storage.py     # Cloudinary utilities (unused)
+│   ├── auth/
+│   │   ├── db.py            # SQLite: users, quiz scores, activity
+│   │   ├── jwt_handler.py   # JWT create/decode
+│   │   └── models.py        # Pydantic auth models
+│   └── requirements.txt
+├── frontend/
+│   ├── src/
+│   │   ├── pages/           # Upload, QnA, Quiz, Library, Dashboard
+│   │   ├── components/      # Navbar, Sidebar, Toast, etc.
+│   │   └── context/         # AuthContext, ThemeContext
+│   └── package.json
+└── .github/
+    └── workflows/
+        └── deploy.yml       # CI: install deps + run tests
 ```
 
-## Production Setup
+---
 
-### Backend (AWS EC2)
-1. Provision an EC2 instance (Ubuntu, Docker installed).
-2. Create `/home/<user>/askmynotes.env` with `OPENAI_API_KEY` and `ALLOWED_ORIGINS`.
-3. Configure GitHub Secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`, `EC2_HOST`, `EC2_USER`, `EC2_SSH_KEY`.
-4. Push to `main` — GitHub Actions builds, pushes to Docker Hub, and redeploys via SSH.
-5. Open port 8000 in the EC2 security group.
+## 📝 License
 
-### Frontend (Vercel)
-1. Import the `frontend` directory as a Vercel project.
-2. Set environment variable `VITE_API_URL` to your EC2 backend's public URL.
-3. Deploy.
-
-## Environment Variables
-
-| Variable          | Location  | Description                          |
-|-------------------|-----------|---------------------------------------|
-| `OPENAI_API_KEY`  | backend   | OpenAI API key                       |
-| `ALLOWED_ORIGINS` | backend   | Comma-separated CORS origins         |
-| `CHROMA_DIR`      | backend   | ChromaDB persistence path            |
-| `VITE_API_URL`    | frontend  | Backend API base URL                 |
-
-## Step-by-Step Setup Guide (Beginner)
-
-### Step 1: Install prerequisites
-- Install Python 3.11 from python.org
-- Install Node.js 20 from nodejs.org
-- Install Docker Desktop (optional)
-- Get an OpenAI API key from platform.openai.com
-
-### Step 2: Project files
-Extract this project to a folder called `askmynotes`.
-
-### Step 3: Set up the backend
-1. Open a terminal in `askmynotes/backend`
-2. Run: `cp .env.example .env`
-3. Open `.env` and paste your OpenAI key after `OPENAI_API_KEY=`
-4. Create a virtual environment:
-   - `python -m venv venv`
-   - Activate it: `source venv/bin/activate` (Mac/Linux) or `venv\Scripts\activate` (Windows)
-5. Install dependencies: `pip install -r requirements.txt`
-6. Start the server: `uvicorn main:app --reload`
-7. Visit `http://localhost:8000/health` — you should see `{"status": "ok"}`
-
-### Step 4: Set up the frontend
-1. Open a new terminal in `askmynotes/frontend`
-2. Run: `cp .env.example .env` (leave `VITE_API_URL=http://localhost:8000`)
-3. Install dependencies: `npm install`
-4. Start the dev server: `npm run dev`
-5. Open the URL shown (usually `http://localhost:5173`)
-
-### Step 5: Try it out
-1. Go to the "Upload" tab and upload a PDF of lecture notes
-2. Switch to "Ask Questions" and type a question — note the cited page numbers
-3. Switch to "Quiz" and click "Generate 5 MCQs" — click an option to see if it's correct
-
-### Step 6 (Optional): Run everything with Docker
-1. From the project root: `docker compose up --build`
-2. Backend runs on port 8000, frontend on port 5173
-
-### Step 7: Deploy to production
-1. Push your code to a GitHub repository
-2. Set up an AWS EC2 instance with Docker installed
-3. Add the required secrets in GitHub repo settings → Secrets and variables → Actions:
-   - `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`
-   - `EC2_HOST`, `EC2_USER`, `EC2_SSH_KEY`
-4. Push to the `main` branch — the GitHub Action will build and deploy automatically
-5. Deploy the frontend to Vercel, setting `VITE_API_URL` to your EC2 backend URL
+MIT
