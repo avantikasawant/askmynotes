@@ -13,6 +13,7 @@ import httpx
 from rag_pipeline import (
     ingest_document, get_answer, list_indexed_files, clear_vectorstore,
     get_top_chunks, get_user_vectorstore, delete_file_from_vectorstore,
+    get_relevant_docs,
 )
 from quiz import generate_quiz, get_quiz_topics
 from auth.db import (
@@ -198,9 +199,8 @@ async def ask_stream(payload: AskRequest, authorization: str = Header(default=""
     from langchain_groq import ChatGroq
     log_activity(claims["sub"], "asked", payload.question[:100])
 
-    vs = get_user_vectorstore(claims["sub"])
-    retriever = vs.as_retriever(search_type="mmr", search_kwargs={"k": 6, "fetch_k": 12})
-    docs = retriever.invoke(payload.question)
+    # Advanced retrieval: hybrid search + re-ranking
+    docs    = get_relevant_docs(claims["sub"], payload.question, k=5)
     context = "\n\n".join(d.page_content for d in docs)
 
     sources = []

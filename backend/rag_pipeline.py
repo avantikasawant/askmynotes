@@ -13,9 +13,9 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 _DATA_DIR = "/data" if os.path.isdir("/data") else os.path.dirname(os.path.abspath(__file__))
 CHROMA_DIR = os.getenv("CHROMA_DIR", os.path.join(_DATA_DIR, "chroma_db"))
 
-# Lazy embedding loader — model is downloaded on first use, not at import time
-# This prevents Render startup timeouts from the ~100MB model download
+# ── Lazy loaders (prevent Render startup timeouts) ────────────────────────────────────
 _embeddings = None
+_reranker   = None
 
 def _get_embeddings():
     global _embeddings
@@ -23,8 +23,16 @@ def _get_embeddings():
         _embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
     return _embeddings
 
-# ── Per-user vector store cache ────────────────────────────────────────────────
-# Maps user_email → Chroma instance so we don't recreate connections on every call
+def _get_reranker():
+    """Lazy-load Flashrank cross-encoder re-ranker (tiny model, no API key needed)."""
+    global _reranker
+    if _reranker is None:
+        from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
+        _reranker = FlashrankRerank(top_n=5)
+    return _reranker
+
+# ── Per-user caches ────────────────────────────────────────────────────────────────────
+# Maps user_email → Chroma instance so we don’t recreate connections on every call
 _user_stores: dict = {}
 
 # Per-user answer cache: (user_email, question_hash) → answer dict
@@ -97,7 +105,59 @@ def load_document(file_path: str) -> list:
         raise ValueError(f"Unsupported file type: {ext}. Supported: .pdf .docx .pptx .txt")
 
 
-# ── Core pipeline functions ────────────────────────────────────────────────────
+# ── Core pipeline functions ────────────────────────────────────────────────────────────────────
+
+def _build_hybrid_retriever(user_email: str, k: int = 12):
+    """
+    Combine BM25 keyword search (40%) with dense MMR semantic search (60%).
+    Falls back to MMR-only if the collection is empty.
+    """
+    from langchain_community.retrievers import BM25Retriever
+    from langchain.retrievers import EnsembleRetriever
+    from langchain_core.documents import Document
+
+    vs = get_user_vectorstore(user_email)
+    all_data = vs.get(include=["documents", "metadatas"])
+
+    if not all_data["documents"]:
+        return vs.as_retriever(search_type="mmr", search_kwargs={"k": k // 2, "fetch_k": k})
+
+    docs = [
+        Document(page_content=text, metadata=meta)
+        for text, meta in zip(all_data["documents"], all_data["metadatas"])
+    ]
+    bm25  = BM25Retriever.from_documents(docs, k=k)
+    dense = vs.as_retriever(search_type="mmr", search_kwargs={"k": k, "fetch_k": k * 2})
+    return EnsembleRetriever(retrievers=[bm25, dense], weights=[0.4, 0.6])
+
+
+def get_relevant_docs(user_email: str, question: str, k: int = 5) -> list:
+    """
+    Advanced RAG retrieval:
+      1. Hybrid search  — BM25 (keyword) + dense MMR (semantic)
+      2. Cross-encoder re-ranking — Flashrank picks the best k results
+    Falls back to plain MMR if either step fails.
+    """
+    from langchain.retrievers import ContextualCompressionRetriever
+    try:
+        hybrid   = _build_hybrid_retriever(user_email, k=k * 2)
+        reranker = _get_reranker()
+        retriever = ContextualCompressionRetriever(
+            base_compressor=reranker,
+            base_retriever=hybrid,
+        )
+        docs = retriever.invoke(question)
+        return docs if docs else _mmr_fallback(user_email, question, k)
+    except Exception:
+        return _mmr_fallback(user_email, question, k)
+
+
+def _mmr_fallback(user_email: str, question: str, k: int) -> list:
+    """Plain MMR fallback when advanced retrieval fails."""
+    vs = get_user_vectorstore(user_email)
+    return vs.as_retriever(
+        search_type="mmr", search_kwargs={"k": k, "fetch_k": k * 2}
+    ).invoke(question)
 
 def list_indexed_files(user_email: str) -> list:
     """Return unique filenames indexed in this user's collection."""
@@ -159,33 +219,21 @@ def ingest_pdf(file_path: str, user_email: str) -> int:
 
 
 def get_answer(question: str, user_email: str) -> dict:
-    """Retrieve relevant chunks from the user's collection and answer with page citations."""
+    """Advanced RAG: hybrid retrieval + re-ranking + LLM answer with citations."""
 
     # Return cached answer for this user + question combo
     cache_key = (user_email, _hash(question))
     if cache_key in _answer_cache:
         return {**_answer_cache[cache_key], "cached": True}
 
-    vs = get_user_vectorstore(user_email)
-    retriever = vs.as_retriever(
-        search_type="mmr",          # MMR: diverse results, avoids redundant chunks
-        search_kwargs={"k": 6, "fetch_k": 12},
-    )
+    # Advanced retrieval: hybrid search + re-ranking
+    docs = get_relevant_docs(user_email, question, k=5)
+    context = "\n\n".join(d.page_content for d in docs)
 
-    llm = ChatGroq(api_key=GROQ_API_KEY, model="llama-3.1-8b-instant", temperature=0)
-
-    qa_chain = RetrievalQA.from_chain_type(
-        llm=llm,
-        retriever=retriever,
-        return_source_documents=True,
-    )
-
-    result = qa_chain.invoke({"query": question})
-
-    # Build source info: page number + snippet of the chunk text
+    # Build source citations
     sources = []
     seen_pages = set()
-    for doc in result["source_documents"]:
+    for doc in docs:
         page = doc.metadata.get("page", 0) + 1
         filename = os.path.basename(doc.metadata.get("source", "unknown"))
         if page not in seen_pages:
@@ -196,8 +244,16 @@ def get_answer(question: str, user_email: str) -> dict:
                 "snippet": doc.page_content[:200].strip(),
             })
 
+    llm = ChatGroq(api_key=GROQ_API_KEY, model="llama-3.1-8b-instant", temperature=0)
+    prompt = (
+        "You are a study assistant. Answer based ONLY on the provided context. "
+        "If the answer is not in the context, say so.\n\n"
+        f"Context:\n{context}\n\nQuestion: {question}\nAnswer:"
+    )
+    result = llm.invoke(prompt)
+
     answer = {
-        "answer": result["result"],
+        "answer": result.content,
         "sources": sources,
         "cached": False,
     }
@@ -205,24 +261,22 @@ def get_answer(question: str, user_email: str) -> dict:
     # Cache up to 200 answers per user (prevent unbounded growth)
     user_cache_keys = [k for k in _answer_cache if k[0] == user_email]
     if len(user_cache_keys) > 200:
-        for k in user_cache_keys[:50]:   # evict oldest 50
+        for k in user_cache_keys[:50]:
             del _answer_cache[k]
     _answer_cache[cache_key] = answer
-
     return answer
 
 
 def get_top_chunks(user_email: str, k: int = 8) -> str:
     """
-    Retrieve the most semantically diverse chunks for this user's notes.
+    Retrieve the most relevant chunks for this user's notes using hybrid search.
     Used by quiz.py and study-guide endpoint.
     """
-    vs = get_user_vectorstore(user_email)
-    retriever = vs.as_retriever(
-        search_type="mmr",
-        search_kwargs={"k": k, "fetch_k": 16},
+    docs = get_relevant_docs(
+        user_email,
+        "key concepts, definitions, important facts and examples",
+        k=k,
     )
-    docs = retriever.invoke("key concepts, definitions, important facts and examples")
     return "\n\n".join(doc.page_content for doc in docs)
 
 
