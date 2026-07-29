@@ -217,3 +217,22 @@ def get_top_chunks(user_email: str, k: int = 8) -> str:
     )
     docs = retriever.invoke("key concepts, definitions, important facts and examples")
     return "\n\n".join(doc.page_content for doc in docs)
+
+
+def delete_file_from_vectorstore(user_email: str, filename: str) -> int:
+    """Remove all chunks for a specific file from the user's vector collection.
+    Returns number of chunks deleted."""
+    vs = get_user_vectorstore(user_email)
+    results = vs.get(include=["metadatas"])
+    ids_to_delete = [
+        doc_id for doc_id, meta in zip(results["ids"], results["metadatas"])
+        if os.path.basename(meta.get("source", "")) == filename
+    ]
+    if ids_to_delete:
+        vs.delete(ids=ids_to_delete)
+    # Invalidate answer cache for this user
+    keys_to_del = [k for k in _answer_cache if k[0] == user_email]
+    for k in keys_to_del:
+        del _answer_cache[k]
+    return len(ids_to_delete)
+
