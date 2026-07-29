@@ -13,8 +13,15 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 _DATA_DIR = "/data" if os.path.isdir("/data") else os.path.dirname(os.path.abspath(__file__))
 CHROMA_DIR = os.getenv("CHROMA_DIR", os.path.join(_DATA_DIR, "chroma_db"))
 
-# FastEmbed — lightweight local embeddings, no API key needed
-embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
+# Lazy embedding loader — model is downloaded on first use, not at import time
+# This prevents Render startup timeouts from the ~100MB model download
+_embeddings = None
+
+def _get_embeddings():
+    global _embeddings
+    if _embeddings is None:
+        _embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
+    return _embeddings
 
 # ── Per-user vector store cache ────────────────────────────────────────────────
 # Maps user_email → Chroma instance so we don't recreate connections on every call
@@ -34,7 +41,7 @@ def get_user_vectorstore(user_email: str) -> Chroma:
     if user_email not in _user_stores:
         _user_stores[user_email] = Chroma(
             collection_name=_collection_name(user_email),
-            embedding_function=embeddings,
+            embedding_function=_get_embeddings(),
             persist_directory=CHROMA_DIR,
         )
     return _user_stores[user_email]
