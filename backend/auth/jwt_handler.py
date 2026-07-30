@@ -1,6 +1,6 @@
 import os
 import jwt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 ALGORITHM = "HS256"
 EXPIRE_HOURS = 72
@@ -12,7 +12,7 @@ def create_token(email: str, name: str) -> str:
     payload = {
         "sub": email,
         "name": name,
-        "exp": datetime.utcnow() + timedelta(hours=EXPIRE_HOURS)
+        "exp": datetime.now(timezone.utc) + timedelta(hours=EXPIRE_HOURS)
     }
     return jwt.encode(payload, _secret(), algorithm=ALGORITHM)
 

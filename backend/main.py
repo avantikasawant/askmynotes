@@ -2,13 +2,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
-import shutil
 import json
-from fastapi import FastAPI, UploadFile, File, HTTPException, Header
+from fastapi import FastAPI, Request, UploadFile, File, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import httpx
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from rag_pipeline import (
     ingest_document, get_answer, list_indexed_files, clear_vectorstore,
@@ -26,6 +28,11 @@ from youtube_search import search_youtube_video, search_youtube_videos
 
 app = FastAPI(title="AskMyNotes API")
 init_db()
+
+# ── Rate limiter (30 req/min per IP on LLM endpoints) ────────────────────────
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -181,7 +188,8 @@ async def delete_from_library(filename: str, authorization: str = Header(default
     return {"status": "deleted", "chunks_removed": deleted}
 
 @app.post("/ask")
-async def ask_question(payload: AskRequest, authorization: str = Header(default="")):
+@limiter.limit("30/minute")
+async def ask_question(request: Request, payload: AskRequest, authorization: str = Header(default="")):
     claims = get_current_user(authorization)
     if not payload.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
@@ -191,7 +199,8 @@ async def ask_question(payload: AskRequest, authorization: str = Header(default=
 
 
 @app.post("/ask/stream")
-async def ask_stream(payload: AskRequest, authorization: str = Header(default="")):
+@limiter.limit("30/minute")
+async def ask_stream(request: Request, payload: AskRequest, authorization: str = Header(default="")):
     claims = get_current_user(authorization)
     if not payload.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")

@@ -2,7 +2,7 @@
 import os
 import pytest
 
-os.environ.setdefault("JWT_SECRET", "test-jwt-secret-key-for-ci-only")
+os.environ.setdefault("JWT_SECRET", "test-jwt-secret-for-ci-32bytes-ok!")
 
 
 def test_create_and_decode_token():

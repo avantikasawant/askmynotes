@@ -8,7 +8,7 @@ import pytest
 
 # ── Set env vars BEFORE any app imports ──────────────────────────────────────
 # These override real values so tests never need real API keys
-os.environ.setdefault("JWT_SECRET", "test-jwt-secret-key-for-ci-only")
+os.environ.setdefault("JWT_SECRET", "test-jwt-secret-for-ci-32bytes-ok!")
 os.environ.setdefault("GROQ_API_KEY", "test-groq-key-not-real")
 
 
