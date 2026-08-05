@@ -1,5 +1,15 @@
+"""
+RAG pipeline — document ingestion, hybrid retrieval, answer generation.
+
+Changes vs previous version:
+  - In-memory _answer_cache dict replaced with Redis (persistent, shared across workers).
+  - Cache gracefully degrades to no-op if Redis is unavailable.
+  - Per-user answer cache invalidation still works (DEL by key pattern).
+"""
 import os
+import json
 import hashlib
+import logging
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import FastEmbedEmbeddings
@@ -7,21 +17,104 @@ from langchain_groq import ChatGroq
 from langchain_chroma import Chroma
 from langchain.chains import RetrievalQA
 
+logger = logging.getLogger(__name__)
+
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 # Use /data (Render persistent disk) if available, else local directory
 _DATA_DIR = "/data" if os.path.isdir("/data") else os.path.dirname(os.path.abspath(__file__))
 CHROMA_DIR = os.getenv("CHROMA_DIR", os.path.join(_DATA_DIR, "chroma_db"))
 
-# ── Lazy loaders (prevent Render startup timeouts) ────────────────────────────────────
+# ── Redis cache ────────────────────────────────────────────────────────────────
+# Answers are cached in Redis with a 1-hour TTL.
+# Falls back silently to no caching if Redis is unreachable.
+
+_CACHE_TTL = int(os.getenv("ANSWER_CACHE_TTL", "3600"))  # seconds
+_CACHE_PREFIX = "askmynotes:answer"
+_redis = None
+
+
+def _get_redis():
+    """Lazy-initialise Redis connection. Returns None if unavailable."""
+    global _redis
+    if _redis is not None:
+        return _redis
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    try:
+        import redis as _redis_lib
+        client = _redis_lib.from_url(
+            redis_url,
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+        )
+        client.ping()
+        _redis = client
+        logger.info("Redis cache connected at %s", redis_url.split("@")[-1])
+    except Exception as exc:
+        logger.warning("Redis unavailable — answer cache disabled (%s)", exc)
+        _redis = None
+    return _redis
+
+
+def _cache_key(user_email: str, question: str) -> str:
+    u = hashlib.md5(user_email.encode()).hexdigest()[:12]
+    q = hashlib.md5(question.lower().strip().encode()).hexdigest()
+    return f"{_CACHE_PREFIX}:{u}:{q}"
+
+
+def _cache_get(user_email: str, question: str) -> dict | None:
+    r = _get_redis()
+    if r is None:
+        return None
+    try:
+        raw = r.get(_cache_key(user_email, question))
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
+def _cache_set(user_email: str, question: str, value: dict) -> None:
+    r = _get_redis()
+    if r is None:
+        return
+    try:
+        r.setex(_cache_key(user_email, question), _CACHE_TTL, json.dumps(value))
+    except Exception:
+        pass  # cache write failure is non-fatal
+
+
+def _cache_invalidate_user(user_email: str) -> None:
+    """Delete all cached answers for a user (called when they upload new content)."""
+    r = _get_redis()
+    if r is None:
+        return
+    try:
+        u = hashlib.md5(user_email.encode()).hexdigest()[:12]
+        pattern = f"{_CACHE_PREFIX}:{u}:*"
+        cursor = 0
+        while True:
+            cursor, keys = r.scan(cursor, match=pattern, count=100)
+            if keys:
+                r.delete(*keys)
+            if cursor == 0:
+                break
+        logger.debug("Invalidated Redis cache for user %s", user_email)
+    except Exception:
+        pass  # cache invalidation failure is non-fatal
+
+
+# ── Lazy loaders (prevent Render startup timeouts) ─────────────────────────────
 _embeddings = None
 _reranker   = None
+
 
 def _get_embeddings():
     global _embeddings
     if _embeddings is None:
         _embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
     return _embeddings
+
 
 def _get_reranker():
     """Lazy-load Flashrank cross-encoder re-ranker (tiny model, no API key needed)."""
@@ -31,12 +124,10 @@ def _get_reranker():
         _reranker = FlashrankRerank(top_n=5)
     return _reranker
 
-# ── Per-user caches ────────────────────────────────────────────────────────────────────
-# Maps user_email → Chroma instance so we don’t recreate connections on every call
-_user_stores: dict = {}
 
-# Per-user answer cache: (user_email, question_hash) → answer dict
-_answer_cache: dict = {}
+# ── Per-user vector store cache ────────────────────────────────────────────────
+# Maps user_email → Chroma instance so we don't recreate connections on every call
+_user_stores: dict = {}
 
 
 def _collection_name(user_email: str) -> str:
@@ -105,7 +196,7 @@ def load_document(file_path: str) -> list:
         raise ValueError(f"Unsupported file type: {ext}. Supported: .pdf .docx .pptx .txt")
 
 
-# ── Core pipeline functions ────────────────────────────────────────────────────────────────────
+# ── Core pipeline functions ────────────────────────────────────────────────────
 
 def _build_hybrid_retriever(user_email: str, k: int = 12):
     """
@@ -159,6 +250,7 @@ def _mmr_fallback(user_email: str, question: str, k: int) -> list:
         search_type="mmr", search_kwargs={"k": k, "fetch_k": k * 2}
     ).invoke(question)
 
+
 def list_indexed_files(user_email: str) -> list:
     """Return unique filenames indexed in this user's collection."""
     try:
@@ -177,15 +269,13 @@ def list_indexed_files(user_email: str) -> list:
 def clear_vectorstore(user_email: str):
     """Delete all documents from this user's vector collection."""
     global _user_stores
-    # Clear this user's answer cache
-    keys_to_del = [k for k in _answer_cache if k[0] == user_email]
-    for k in keys_to_del:
-        del _answer_cache[k]
+    # Invalidate Redis cache for this user
+    _cache_invalidate_user(user_email)
 
     try:
         vs = get_user_vectorstore(user_email)
         vs.delete_collection()
-        # Remove from cache so it gets recreated fresh on next access
+        # Remove from local store cache so it gets recreated fresh on next access
         _user_stores.pop(user_email, None)
     except Exception:
         pass
@@ -195,6 +285,7 @@ def ingest_document(file_path: str, user_email: str) -> int:
     """
     Load any supported document, split into chunks, and store in the
     user's private ChromaDB collection. Returns the number of chunks indexed.
+    Invalidates Redis answer cache so stale answers aren't served.
     """
     pages = load_document(file_path)
 
@@ -205,10 +296,8 @@ def ingest_document(file_path: str, user_email: str) -> int:
     vs = get_user_vectorstore(user_email)
     vs.add_documents(chunks)
 
-    # Invalidate this user's answer cache when new content is added
-    keys_to_del = [k for k in _answer_cache if k[0] == user_email]
-    for k in keys_to_del:
-        del _answer_cache[k]
+    # Invalidate this user's Redis answer cache when new content is added
+    _cache_invalidate_user(user_email)
 
     return len(chunks)
 
@@ -221,16 +310,16 @@ def ingest_pdf(file_path: str, user_email: str) -> int:
 def get_answer(question: str, user_email: str) -> dict:
     """Advanced RAG: hybrid retrieval + re-ranking + LLM answer with citations."""
 
-    # Return cached answer for this user + question combo
-    cache_key = (user_email, _hash(question))
-    if cache_key in _answer_cache:
-        return {**_answer_cache[cache_key], "cached": True}
+    # 1. Check Redis cache first
+    cached = _cache_get(user_email, question)
+    if cached is not None:
+        return {**cached, "cached": True}
 
-    # Advanced retrieval: hybrid search + re-ranking
+    # 2. Advanced retrieval: hybrid search + re-ranking
     docs = get_relevant_docs(user_email, question, k=5)
     context = "\n\n".join(d.page_content for d in docs)
 
-    # Build source citations
+    # 3. Build source citations
     sources = []
     seen_pages = set()
     for doc in docs:
@@ -244,7 +333,12 @@ def get_answer(question: str, user_email: str) -> dict:
                 "snippet": doc.page_content[:200].strip(),
             })
 
-    llm = ChatGroq(api_key=GROQ_API_KEY, model="llama-3.1-8b-instant", temperature=0)
+    # 4. LLM answer generation
+    llm = ChatGroq(
+        api_key=GROQ_API_KEY,
+        model=os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
+        temperature=0,
+    )
     prompt = (
         "You are a study assistant. Answer based ONLY on the provided context. "
         "If the answer is not in the context, say so.\n\n"
@@ -258,12 +352,8 @@ def get_answer(question: str, user_email: str) -> dict:
         "cached": False,
     }
 
-    # Cache up to 200 answers per user (prevent unbounded growth)
-    user_cache_keys = [k for k in _answer_cache if k[0] == user_email]
-    if len(user_cache_keys) > 200:
-        for k in user_cache_keys[:50]:
-            del _answer_cache[k]
-    _answer_cache[cache_key] = answer
+    # 5. Store in Redis (TTL = ANSWER_CACHE_TTL seconds, default 1 hour)
+    _cache_set(user_email, question, answer)
     return answer
 
 
@@ -291,9 +381,6 @@ def delete_file_from_vectorstore(user_email: str, filename: str) -> int:
     ]
     if ids_to_delete:
         vs.delete(ids=ids_to_delete)
-    # Invalidate answer cache for this user
-    keys_to_del = [k for k in _answer_cache if k[0] == user_email]
-    for k in keys_to_del:
-        del _answer_cache[k]
+    # Invalidate Redis answer cache for this user
+    _cache_invalidate_user(user_email)
     return len(ids_to_delete)
-

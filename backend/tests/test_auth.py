@@ -9,15 +9,16 @@ def test_register_new_user(client):
         "password": "securepass",
         "mobile": "9999999999",
     })
-    assert res.status_code == 200
+    assert res.status_code == 201
     data = res.json()
     assert "token" in data
+    assert "refresh_token" in data
     assert data["email"] == "alice@test.com"
     assert data["name"] == "Alice"
 
 
 def test_register_duplicate_email(client):
-    payload = {"name": "Bob", "email": "bob@test.com", "password": "pass", "mobile": ""}
+    payload = {"name": "Bob", "email": "bob@test.com", "password": "securepass123", "mobile": ""}
     client.post("/auth/register", json=payload)
     # Second registration with same email should fail
     res = client.post("/auth/register", json=payload)

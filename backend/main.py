@@ -1,342 +1,153 @@
+"""
+AskMyNotes API — application entry point.
+
+All business logic lives in routers/. This file only:
+  - Configures the FastAPI app
+  - Registers middleware
+  - Mounts routers
+  - Provides health & startup hooks
+"""
 from dotenv import load_dotenv
 load_dotenv()
 
+import logging
 import os
-import json
-from fastapi import FastAPI, Request, UploadFile, File, HTTPException, Header
+import uuid
+
+import sentry_sdk
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-import httpx
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.starlette import StarletteIntegration
 
-from rag_pipeline import (
-    ingest_document, get_answer, list_indexed_files, clear_vectorstore,
-    get_top_chunks, get_user_vectorstore, delete_file_from_vectorstore,
-    get_relevant_docs,
-)
-from quiz import generate_quiz, get_quiz_topics
-from auth.db import (
-    init_db, create_user, get_user_by_email, verify_password, update_profile,
-    log_activity, save_quiz_attempt, get_dashboard_data,
-)
-from auth.jwt_handler import create_token, decode_token
-from auth.models import UserRegister, UserLogin, GoogleLogin, UserProfile
-from youtube_search import search_youtube_video, search_youtube_videos
+from auth.db import init_db
+from routers import auth, upload, ask, library, quiz, youtube, dashboard, jobs
 
-app = FastAPI(title="AskMyNotes API")
+# ── Logging ────────────────────────────────────────────────────────────────────
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+# ── Sentry (error tracking — optional, skipped if DSN not set) ─────────────────
+
+_sentry_dsn = os.getenv("SENTRY_DSN")
+if _sentry_dsn:
+    sentry_sdk.init(
+        dsn=_sentry_dsn,
+        integrations=[
+            StarletteIntegration(transaction_style="endpoint"),
+            FastApiIntegration(transaction_style="endpoint"),
+        ],
+        traces_sample_rate=float(os.getenv("SENTRY_TRACES_RATE", "0.2")),
+        environment=os.getenv("ENVIRONMENT", "development"),
+        release=os.getenv("APP_VERSION", "dev"),
+    )
+    logger.info("Sentry initialised (env=%s)", os.getenv("ENVIRONMENT", "development"))
+
+# ── App factory ────────────────────────────────────────────────────────────────
+
+app = FastAPI(
+    title="AskMyNotes API",
+    version=os.getenv("APP_VERSION", "dev"),
+    description="AI-powered study assistant — upload notes, ask questions, generate quizzes.",
+    docs_url="/docs" if os.getenv("ENVIRONMENT") != "production" else None,
+    redoc_url="/redoc" if os.getenv("ENVIRONMENT") != "production" else None,
+)
+
+# ── Database init ──────────────────────────────────────────────────────────────
+
 init_db()
 
-# ── Rate limiter (30 req/min per IP on LLM endpoints) ────────────────────────
+# ── Rate limiter ───────────────────────────────────────────────────────────────
+
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# ── CORS ───────────────────────────────────────────────────────────────────────
+
+_raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173")
+_allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=_allowed_origins,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-UPLOAD_DIR = "uploaded_pdfs"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/tokeninfo"
-SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".txt"}
-SUPPORTED_LABEL = ".pdf, .docx, .pptx, .txt"
-
-
-def get_current_user(authorization: str = "") -> dict:
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    token = authorization.split(" ", 1)[1]
-    try:
-        return decode_token(token)
-    except ValueError as e:
-        raise HTTPException(status_code=401, detail=str(e))
-
-
-# ── Auth ──────────────────────────────────────────────────────────────────────
-
-@app.post("/auth/register")
-async def register(payload: UserRegister):
-    ok = create_user(payload.name, payload.email, payload.password, payload.mobile)
-    if not ok:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    token = create_token(payload.email, payload.name)
-    log_activity(payload.email, "registered")
-    return {"token": token, "name": payload.name, "email": payload.email}
-
-
-@app.post("/auth/login")
-async def login(payload: UserLogin):
-    if not verify_password(payload.email, payload.password):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    user = get_user_by_email(payload.email)
-    token = create_token(payload.email, user["name"])
-    return {"token": token, "name": user["name"], "email": payload.email}
-
-
-@app.post("/auth/google")
-async def google_login(payload: GoogleLogin):
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(GOOGLE_TOKEN_URL, params={"id_token": payload.token})
-    info = resp.json()
-    if "error" in info or resp.status_code != 200:
-        raise HTTPException(status_code=401, detail="Invalid Google token")
-    email = info.get("email")
-    name = info.get("name", email)
-    google_id = info.get("sub")
-    user = get_user_by_email(email)
-    if not user:
-        create_user(name, email, "", "", google_id)
-        log_activity(email, "registered", "google")
-    token = create_token(email, name)
-    return {"token": token, "name": name, "email": email}
-
-
-@app.get("/auth/me")
-async def get_me(authorization: str = Header(default="")):
-    claims = get_current_user(authorization)
-    user = get_user_by_email(claims["sub"])
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    return {"name": user["name"], "email": user["email"], "mobile": user["mobile"], "created_at": user["created_at"]}
-
-
-@app.put("/auth/profile")
-async def update_user_profile(payload: UserProfile, authorization: str = Header(default="")):
-    claims = get_current_user(authorization)
-    update_profile(claims["sub"], payload.name, payload.mobile)
-    return {"status": "updated"}
-
-
-# ── Upload ────────────────────────────────────────────────────────────────────
-
-class AskRequest(BaseModel):
-    question: str
-
-
-@app.post("/upload")
-async def upload_pdf(file: UploadFile = File(...), authorization: str = Header(default="")):
-    claims = get_current_user(authorization)
-    ext = os.path.splitext(file.filename)[1].lower()
-    if ext not in SUPPORTED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail=f"Unsupported file type. Supported: {SUPPORTED_LABEL}")
-
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
-    contents = await file.read()
-    with open(file_path, "wb") as f:
-        f.write(contents)
-
-    chunk_count = ingest_document(file_path, claims["sub"])
-    log_activity(claims["sub"], "uploaded", file.filename)
-    return {"status": "success", "filename": file.filename, "chunks_indexed": chunk_count}
-
-
-@app.post("/upload/multiple")
-async def upload_multiple_pdfs(files: list[UploadFile] = File(...), authorization: str = Header(default="")):
-    claims = get_current_user(authorization)
-    MAX_TOTAL_MB = 20
-    total_size = 0
-    results = []
-
-    for file in files:
-        ext = os.path.splitext(file.filename)[1].lower()
-        if ext not in SUPPORTED_EXTENSIONS:
-            results.append({"filename": file.filename, "status": "error", "message": f"Unsupported type. Use: {SUPPORTED_LABEL}"})
-            continue
-
-        contents = await file.read()
-        size_mb = len(contents) / (1024 * 1024)
-        total_size += size_mb
-
-        if total_size > MAX_TOTAL_MB:
-            results.append({"filename": file.filename, "status": "error", "message": f"Exceeds {MAX_TOTAL_MB}MB limit"})
-            continue
-
-        file_path = os.path.join(UPLOAD_DIR, file.filename)
-        with open(file_path, "wb") as f:
-            f.write(contents)
-
-        try:
-            chunk_count = ingest_document(file_path, claims["sub"])
-            log_activity(claims["sub"], "uploaded", file.filename)
-            results.append({"filename": file.filename, "status": "success", "chunks_indexed": chunk_count})
-        except Exception as e:
-            results.append({"filename": file.filename, "status": "error", "message": str(e)})
-
-    return {"results": results, "total_files": len(files), "successful": sum(1 for r in results if r["status"] == "success")}
-
-
-@app.get("/library")
-async def get_library(authorization: str = Header(default="")):
-    """Return list of indexed files for the logged-in user (from ChromaDB)."""
-    claims = get_current_user(authorization)
-    files = list_indexed_files(claims["sub"])
-    return {"pdfs": [{"filename": f} for f in files]}
-
-
-@app.delete("/library/{filename}")
-async def delete_from_library(filename: str, authorization: str = Header(default="")):
-    """Remove a specific file's chunks from the user's vector store."""
-    claims = get_current_user(authorization)
-    deleted = delete_file_from_vectorstore(claims["sub"], filename)
-    return {"status": "deleted", "chunks_removed": deleted}
-
-@app.post("/ask")
-@limiter.limit("30/minute")
-async def ask_question(request: Request, payload: AskRequest, authorization: str = Header(default="")):
-    claims = get_current_user(authorization)
-    if not payload.question.strip():
-        raise HTTPException(status_code=400, detail="Question cannot be empty")
-    result = get_answer(payload.question, claims["sub"])
-    log_activity(claims["sub"], "asked", payload.question[:100])
-    return result
-
-
-@app.post("/ask/stream")
-@limiter.limit("30/minute")
-async def ask_stream(request: Request, payload: AskRequest, authorization: str = Header(default="")):
-    claims = get_current_user(authorization)
-    if not payload.question.strip():
-        raise HTTPException(status_code=400, detail="Question cannot be empty")
-
-    from langchain_groq import ChatGroq
-    log_activity(claims["sub"], "asked", payload.question[:100])
-
-    # Advanced retrieval: hybrid search + re-ranking
-    docs    = get_relevant_docs(claims["sub"], payload.question, k=5)
-    context = "\n\n".join(d.page_content for d in docs)
-
-    sources = []
-    seen = set()
-    for doc in docs:
-        page = doc.metadata.get("page", 0) + 1
-        filename = os.path.basename(doc.metadata.get("source", "unknown"))
-        if page not in seen:
-            seen.add(page)
-            sources.append({"page": page, "file": filename, "snippet": doc.page_content[:200].strip()})
-
-    prompt = f"Answer based ONLY on this context.\nContext: {context}\nQuestion: {payload.question}\nAnswer:"
-    llm = ChatGroq(api_key=os.getenv("GROQ_API_KEY"), model="llama-3.1-8b-instant", temperature=0, streaming=True)
-
-    async def generate():
-        async for chunk in llm.astream(prompt):
-            token = chunk.content
-            if token:
-                yield f"data: {json.dumps({'token': token})}\n\n"
-        yield f"data: {json.dumps({'sources': sources, 'done': True})}\n\n"
-
-    return StreamingResponse(generate(), media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-
-
-# ── Quiz ──────────────────────────────────────────────────────────────────────
-
-class QuizRequest(BaseModel):
-    difficulty: str = "medium"
-
-
-@app.post("/quiz")
-async def quiz_endpoint(payload: QuizRequest = QuizRequest(), authorization: str = Header(default="")):
-    claims = get_current_user(authorization)
-    return generate_quiz(claims["sub"], payload.difficulty)
-
-
-@app.post("/quiz/save")
-async def save_quiz(score: int, total: int, authorization: str = Header(default="")):
-    claims = get_current_user(authorization)
-    save_quiz_attempt(claims["sub"], score, total)
-    return {"status": "saved"}
-
-
-@app.get("/quiz/topics")
-async def quiz_topics(difficulty: str = "medium", authorization: str = Header(default="")):
-    claims = get_current_user(authorization)
-    return get_quiz_topics(claims["sub"], difficulty)
-
-
-# ── Files (legacy / vectorstore-level) ─────────────────────────────────────────
-
-@app.get("/files")
-async def get_files(authorization: str = Header(default="")):
-    claims = get_current_user(authorization)
-    return {"files": list_indexed_files(claims["sub"])}
-
-
-@app.delete("/files")
-async def clear_files(authorization: str = Header(default="")):
-    claims = get_current_user(authorization)
-    clear_vectorstore(claims["sub"])
-    for f in os.listdir(UPLOAD_DIR):
-        os.remove(os.path.join(UPLOAD_DIR, f))
-    return {"status": "cleared"}
-
-
-# ── Dashboard ─────────────────────────────────────────────────────────────────
-
-@app.get("/dashboard")
-async def dashboard(authorization: str = Header(default="")):
-    claims = get_current_user(authorization)
-    return get_dashboard_data(claims["sub"])
-
-
-# ── YouTube ───────────────────────────────────────────────────────────────────
-
-class VideoRequest(BaseModel):
-    topic: str
-
-class VideosRequest(BaseModel):
-    topic: str
-    max_results: int = 5
-
-
-@app.post("/video")
-async def get_video(payload: VideoRequest, authorization: str = Header(default="")):
-    get_current_user(authorization)
-    return await search_youtube_video(payload.topic)
-
-
-@app.post("/videos")
-async def get_videos(payload: VideosRequest, authorization: str = Header(default="")):
-    get_current_user(authorization)
-    return await search_youtube_videos(payload.topic, max_results=payload.max_results)
-
-
-# ── Study Guide ───────────────────────────────────────────────────────────────
-
-@app.post("/study-guide")
-async def study_guide(authorization: str = Header(default="")):
-    claims = get_current_user(authorization)
-    content = get_top_chunks(claims["sub"], k=10)
-    if not content.strip():
-        return {"error": "No notes uploaded yet."}
-    from groq import Groq
-    client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-    prompt = f"""Analyse these lecture notes and return ONLY valid JSON:
-{{
-  "summary": "2-3 sentence overview",
-  "topics": [{{"topic": "name", "priority": "high|medium|low", "reason": "why important"}}],
-  "study_tips": ["tip 1", "tip 2", "tip 3"]
-}}
-Notes: {content}"""
-    response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"},
-        temperature=0.3,
-    )
-    try:
-        return json.loads(response.choices[0].message.content)
-    except:
-        return {"error": "Failed to generate study guide."}
-
-
-@app.get("/health")
+logger.info("CORS allowed origins: %s", _allowed_origins)
+
+# ── Request ID middleware ──────────────────────────────────────────────────────
+
+@app.middleware("http")
+async def add_request_id(request: Request, call_next) -> Response:
+    request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+# ── Routers ────────────────────────────────────────────────────────────────────
+
+app.include_router(auth.router)
+app.include_router(upload.router)
+app.include_router(ask.router)
+app.include_router(library.router)
+app.include_router(quiz.router)
+app.include_router(youtube.router)
+app.include_router(dashboard.router)
+app.include_router(jobs.router)
+
+# ── Health check ───────────────────────────────────────────────────────────────
+
+@app.get("/health", tags=["ops"])
 async def health():
-    return {"status": "ok"}
+    """Detailed health check — checks DB, Redis connectivity and required env vars."""
+    checks: dict[str, str] = {}
 
+    # Database connectivity
+    try:
+        import psycopg2
+        conn = psycopg2.connect(os.getenv(
+            "DATABASE_URL",
+            "postgresql://askmynotes:askmynotes@localhost:5432/askmynotes",
+        ))
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.close()
+        conn.close()
+        checks["db"] = "ok"
+    except Exception as e:
+        logger.error("Health check: DB error — %s", e)
+        checks["db"] = "error"
+
+    # Redis connectivity
+    try:
+        from rag_pipeline import _get_redis
+        r = _get_redis()
+        if r and r.ping():
+            checks["redis"] = "ok"
+        else:
+            checks["redis"] = "unavailable"
+    except Exception as e:
+        logger.error("Health check: Redis error — %s", e)
+        checks["redis"] = "error"
+
+    # Required environment variables
+    checks["groq_api_key"] = "ok" if os.getenv("GROQ_API_KEY") else "missing"
+    checks["jwt_secret"]   = "ok" if os.getenv("JWT_SECRET") else "missing"
+
+    overall = "ok" if all(v == "ok" for v in checks.values()) else "degraded"
+    return {
+        "status": overall,
+        "version": os.getenv("APP_VERSION", "dev"),
+        "environment": os.getenv("ENVIRONMENT", "development"),
+        "checks": checks,
+    }

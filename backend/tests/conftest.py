@@ -50,3 +50,4 @@ def auth_token(client):
         "password": "testpassword123",
     })
     return res.json()["token"]
+
