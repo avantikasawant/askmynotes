@@ -29,7 +29,8 @@ class UserLogin(BaseModel):
 
 
 class GoogleLogin(BaseModel):
-    token: str
+    token: Optional[str] = None          # legacy id_token (FedCM)
+    access_token: Optional[str] = None   # popup/implicit flow
 
 
 class UserProfile(BaseModel):

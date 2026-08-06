@@ -53,14 +53,40 @@ async def refresh_token(refresh_token: str):
 
 @router.post("/google")
 async def google_login(payload: GoogleLogin):
+    """
+    Accept either:
+      - access_token  (from useGoogleLogin popup/implicit flow)
+      - token / id_token (legacy FedCM flow — kept for backward compat)
+    """
+    access_token = getattr(payload, "access_token", None) or getattr(payload, "token", None)
+    if not access_token:
+        raise HTTPException(status_code=400, detail="Missing Google token")
+
     async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(GOOGLE_TOKEN_URL, params={"id_token": payload.token})
-    info = resp.json()
-    if "error" in info or resp.status_code != 200:
-        raise HTTPException(status_code=401, detail="Invalid Google token")
+        # Try userinfo endpoint first (access_token flow)
+        userinfo_resp = await client.get(
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if userinfo_resp.status_code == 200:
+            info = userinfo_resp.json()
+        else:
+            # Fallback: try tokeninfo endpoint (id_token flow)
+            tokeninfo_resp = await client.get(
+                "https://oauth2.googleapis.com/tokeninfo",
+                params={"id_token": access_token},
+            )
+            if tokeninfo_resp.status_code != 200 or "error" in tokeninfo_resp.json():
+                raise HTTPException(status_code=401, detail="Invalid Google token")
+            info = tokeninfo_resp.json()
+
     email = info.get("email")
-    name = info.get("name", email)
-    google_id = info.get("sub")
+    name = info.get("name") or info.get("email", "").split("@")[0]
+    google_id = info.get("sub", "")
+
+    if not email:
+        raise HTTPException(status_code=401, detail="Could not retrieve email from Google")
+
     user = get_user_by_email(email)
     if not user:
         create_user(name, email, "", "", google_id)
