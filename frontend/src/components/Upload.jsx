@@ -102,10 +102,8 @@ export default function Upload({ onUploadSuccess, indexedFiles = [] }) {
       formData.append("subject", subject);
 
       const res = await axios.post(`${API_URL}${endpoint}`, formData, {
-        headers: {
-          "Content-Type": "multipart/form-data",
-          Authorization: `Bearer ${user?.token}`,
-        },
+        // Do NOT set Content-Type manually — axios sets it with the correct
+        // multipart boundary automatically when body is a FormData object
         timeout: 300000,
         onUploadProgress: (e) => {
           if (e.total) {
