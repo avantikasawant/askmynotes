@@ -85,6 +85,16 @@ def init_db() -> None:
         "CREATE INDEX IF NOT EXISTS idx_quiz_user_email     ON quiz_attempts(user_email)",
         "CREATE INDEX IF NOT EXISTS idx_pdf_user_email      ON pdf_files(user_email)",
         "CREATE INDEX IF NOT EXISTS idx_pdf_is_public       ON pdf_files(is_public)",
+        """
+        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            email      TEXT NOT NULL,
+            token      TEXT NOT NULL,
+            expires_at TIMESTAMP NOT NULL,
+            used       INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
     ]
     for stmt in statements:
         cur.execute(stmt)
@@ -399,3 +409,75 @@ def get_public_pdfs(
     cur.close()
     conn.close()
     return rows
+
+
+# ── Password reset ─────────────────────────────────────────────────────────────
+
+def create_reset_token(email: str) -> str | None:
+    """
+    Generate a 6-digit OTP for password reset.
+    Returns the token string, or None if the email doesn't exist.
+    Invalidates any existing unused tokens for this email first.
+    """
+    import random
+    from datetime import datetime, timezone, timedelta
+
+    user = get_user_by_email(email)
+    if not user:
+        return None  # Don't reveal whether email exists
+
+    token = str(random.randint(100000, 999999))
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    # Invalidate old tokens
+    cur.execute("UPDATE password_reset_tokens SET used = 1 WHERE email = ?", (email,))
+    # Insert new token
+    cur.execute(
+        "INSERT INTO password_reset_tokens (email, token, expires_at) VALUES (?, ?, ?)",
+        (email, token, expires_at.strftime("%Y-%m-%d %H:%M:%S")),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return token
+
+
+def verify_reset_token(email: str, token: str) -> bool:
+    """Check that the token exists, belongs to email, is unused, and is not expired."""
+    from datetime import datetime, timezone
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT expires_at, used FROM password_reset_tokens "
+        "WHERE email = ? AND token = ? ORDER BY created_at DESC LIMIT 1",
+        (email, token),
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not row:
+        return False
+    if row["used"]:
+        return False
+    expires_at = datetime.strptime(row["expires_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) < expires_at
+
+
+def consume_reset_token(email: str, token: str, new_password: str) -> bool:
+    """Mark token as used and update the password hash. Returns True on success."""
+    if not verify_reset_token(email, token):
+        return False
+    new_hash = hash_password(new_password)
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET password_hash = ? WHERE email = ?", (new_hash, email))
+    cur.execute(
+        "UPDATE password_reset_tokens SET used = 1 WHERE email = ? AND token = ?",
+        (email, token),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return True

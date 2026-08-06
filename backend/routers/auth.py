@@ -1,9 +1,14 @@
-"""Auth routes: register, login, Google OAuth, profile."""
+"""Auth routes: register, login, forgot/reset password, profile."""
 import logging
+import os
 import httpx
 from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel, EmailStr
 
-from auth.db import create_user, get_user_by_email, verify_password, update_profile, log_activity
+from auth.db import (
+    create_user, get_user_by_email, verify_password, update_profile, log_activity,
+    create_reset_token, consume_reset_token,
+)
 from auth.jwt_handler import create_token, create_refresh_token, decode_refresh_token
 from auth.models import UserRegister, UserLogin, GoogleLogin, UserProfile
 from dependencies import get_current_user
@@ -115,3 +120,80 @@ async def update_user_profile(payload: UserProfile, user: dict = Depends(get_cur
     update_profile(user["sub"], payload.name, payload.mobile or "")
     logger.info("Profile updated for: %s", user["sub"])
     return {"status": "updated"}
+
+
+# ── Forgot / Reset password ────────────────────────────────────────────────────
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    email: EmailStr
+    otp: str
+    new_password: str
+
+
+def _send_reset_email(to_email: str, otp: str) -> bool:
+    """Send OTP via Gmail SMTP. Returns True on success."""
+    import smtplib
+    from email.mime.text import MIMEText
+    smtp_user = os.getenv("SMTP_EMAIL")
+    smtp_pass = os.getenv("SMTP_PASSWORD")
+    if not smtp_user or not smtp_pass:
+        logger.warning("SMTP not configured — OTP for %s is: %s", to_email, otp)
+        return False
+    try:
+        msg = MIMEText(
+            f"""Hi,
+
+Your AskMyNotes password reset code is:
+
+    {otp}
+
+This code expires in 15 minutes. If you didn't request a reset, ignore this email.
+
+— AskMyNotes Team"""
+        )
+        msg["Subject"] = f"AskMyNotes — Password Reset Code: {otp}"
+        msg["From"] = smtp_user
+        msg["To"] = to_email
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as s:
+            s.login(smtp_user, smtp_pass)
+            s.send_message(msg)
+        logger.info("Reset OTP emailed to %s", to_email)
+        return True
+    except Exception as e:
+        logger.error("Failed to send reset email to %s: %s", to_email, e)
+        return False
+
+
+@router.post("/forgot-password")
+async def forgot_password(payload: ForgotPasswordRequest):
+    """
+    Request a password reset OTP.
+    Always returns 200 to prevent email enumeration.
+    """
+    otp = create_reset_token(payload.email)
+    if otp:
+        email_sent = _send_reset_email(payload.email, otp)
+        if not email_sent:
+            # Dev fallback: return OTP in response (remove in strict production)
+            return {
+                "status": "ok",
+                "message": "Email service not configured.",
+                "dev_otp": otp,   # shown in UI for testing
+            }
+    return {"status": "ok", "message": "If this email is registered, a reset code has been sent."}
+
+
+@router.post("/reset-password")
+async def reset_password(payload: ResetPasswordRequest):
+    """Validate OTP and set the new password."""
+    if len(payload.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    ok = consume_reset_token(payload.email, payload.otp.strip(), payload.new_password)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset code")
+    logger.info("Password reset for: %s", payload.email)
+    return {"status": "ok", "message": "Password updated successfully. You can now sign in."}
