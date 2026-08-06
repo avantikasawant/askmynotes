@@ -112,20 +112,16 @@ async def health():
     """Detailed health check — checks DB, Redis connectivity and required env vars."""
     checks: dict[str, str] = {}
 
-    # Database connectivity
+    # Database connectivity (SQLite — built-in, always available)
     try:
-        import psycopg2
-        conn = psycopg2.connect(os.getenv(
-            "DATABASE_URL",
-            "postgresql://askmynotes:askmynotes@localhost:5432/askmynotes",
-        ))
-        cur = conn.cursor()
-        cur.execute("SELECT 1")
-        cur.close()
+        import sqlite3
+        db_path = os.getenv("DB_PATH", "askmynotes.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("SELECT 1")
         conn.close()
         checks["db"] = "ok"
     except Exception as e:
-        logger.error("Health check: DB error — %s", e)
+        logger.error("Health check: SQLite error — %s", e)
         checks["db"] = "error"
 
     # Redis connectivity

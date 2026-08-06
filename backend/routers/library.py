@@ -34,11 +34,10 @@ async def get_public_notes(
 async def download_public_note(note_id: int):
     """Redirect to the Cloudinary URL for a public note download."""
     from auth.db import get_conn
-    import psycopg2.extras
     conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur = conn.cursor()
     cur.execute(
-        "SELECT cloud_url FROM pdf_files WHERE id = %s AND is_public = TRUE AND cloud_url != ''",
+        "SELECT cloud_url FROM pdf_files WHERE id = ? AND is_public = 1 AND cloud_url != ''",
         (note_id,),
     )
     row = cur.fetchone()
