@@ -5,6 +5,50 @@ import { useTheme } from "../context/ThemeContext";
 
 const API_URL = import.meta.env.VITE_API_URL;
 
+// ── Eye icon toggle ───────────────────────────────────────────────────────────
+function EyeIcon({ visible }) {
+  return visible ? (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+      fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+      <circle cx="12" cy="12" r="3"/>
+    </svg>
+  ) : (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+      fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
+      <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+      <line x1="1" y1="1" x2="23" y2="23"/>
+    </svg>
+  );
+}
+
+// Password field with show/hide toggle
+function PasswordInput({ placeholder, value, onChange, onKeyDown, className, dark }) {
+  const [show, setShow] = useState(false);
+  return (
+    <div className="relative">
+      <input
+        type={show ? "text" : "password"}
+        placeholder={placeholder}
+        value={value}
+        onChange={onChange}
+        onKeyDown={onKeyDown}
+        className={`${className} pr-10`}
+      />
+      <button
+        type="button"
+        onClick={() => setShow(!show)}
+        className={`absolute right-3 top-1/2 -translate-y-1/2 transition
+          ${dark ? "text-slate-400 hover:text-slate-200" : "text-slate-400 hover:text-slate-600"}`}
+        tabIndex={-1}
+      >
+        <EyeIcon visible={show} />
+      </button>
+    </div>
+  );
+}
+
 function FieldError({ msg }) {
   if (!msg) return null;
   return <p className="text-xs text-red-400 mt-1 ml-1">{msg}</p>;
@@ -12,10 +56,10 @@ function FieldError({ msg }) {
 
 // ── Forgot Password Modal (2-step) ────────────────────────────────────────────
 function ForgotPasswordModal({ dark, onClose }) {
-  const [step, setStep] = useState(1);          // 1 = enter email, 2 = enter OTP + new pw
+  const [step, setStep] = useState(1);
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
-  const [devOtp, setDevOtp] = useState("");     // shown when email service not configured
+  const [devOtp, setDevOtp] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -34,10 +78,7 @@ function ForgotPasswordModal({ dark, onClose }) {
     setError(""); setLoading(true);
     try {
       const res = await axios.post(`${API_URL}/auth/forgot-password`, { email });
-      // Dev fallback: backend returns OTP in response when email not configured
-      if (res.data.dev_otp) {
-        setDevOtp(res.data.dev_otp);
-      }
+      if (res.data.dev_otp) setDevOtp(res.data.dev_otp);
       setStep(2);
     } catch {
       setError("Something went wrong. Please try again.");
@@ -66,7 +107,6 @@ function ForgotPasswordModal({ dark, onClose }) {
   };
 
   return (
-    // Backdrop
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
          style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}>
       <div className={`w-full max-w-sm rounded-2xl border shadow-2xl p-6 ${card}`}>
@@ -79,16 +119,16 @@ function ForgotPasswordModal({ dark, onClose }) {
             <p className={`text-xs mt-0.5 ${dark ? "text-slate-400" : "text-slate-500"}`}>
               {step === 1
                 ? "Enter your email to receive a reset code"
-                : `Enter the 6-digit code sent to ${email}`}
+                : `Enter the 6-digit code for ${email}`}
             </p>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-200 text-xl">✕</button>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-200 text-xl w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-700/50">✕</button>
         </div>
 
-        {/* Step indicator */}
+        {/* Step progress bar */}
         <div className="flex items-center gap-2 mb-5">
           {[1, 2].map(s => (
-            <div key={s} className={`h-1.5 flex-1 rounded-full transition-all ${
+            <div key={s} className={`h-1.5 flex-1 rounded-full transition-all duration-300 ${
               step >= s ? "bg-indigo-500" : dark ? "bg-slate-700" : "bg-gray-200"
             }`} />
           ))}
@@ -102,7 +142,7 @@ function ForgotPasswordModal({ dark, onClose }) {
           </div>
         ) : (
           <div className="space-y-3">
-            {/* Step 1 — Email */}
+            {/* ── Step 1: Enter Email ── */}
             {step === 1 && (
               <>
                 <div>
@@ -126,59 +166,80 @@ function ForgotPasswordModal({ dark, onClose }) {
               </>
             )}
 
-            {/* Step 2 — OTP + New Password */}
+            {/* ── Step 2: OTP + New Password ── */}
             {step === 2 && (
               <>
-                {/* Dev OTP notice */}
+                {/* Show OTP in UI when email not configured */}
                 {devOtp && (
-                  <div className={`rounded-xl p-3 border text-xs text-center
-                    ${dark ? "bg-amber-900/30 border-amber-700 text-amber-300"
-                           : "bg-amber-50 border-amber-200 text-amber-700"}`}>
-                    <p className="font-semibold mb-1">📧 Email service not configured</p>
-                    <p>Your reset code is: <span className="font-mono font-black text-base tracking-widest">{devOtp}</span></p>
+                  <div className={`rounded-xl p-4 border text-center
+                    ${dark ? "bg-indigo-900/30 border-indigo-700" : "bg-indigo-50 border-indigo-200"}`}>
+                    <p className={`text-xs mb-2 ${dark ? "text-indigo-300" : "text-indigo-600"}`}>
+                      Your one-time reset code:
+                    </p>
+                    <p className={`font-mono font-black text-3xl tracking-[0.35em] ${dark ? "text-white" : "text-indigo-700"}`}>
+                      {devOtp}
+                    </p>
+                    <p className={`text-[10px] mt-2 ${dark ? "text-slate-500" : "text-slate-400"}`}>
+                      Expires in 15 minutes
+                    </p>
                   </div>
                 )}
+
+                {/* OTP input */}
                 <div>
                   <label className={`text-xs font-semibold mb-1 block ${dark ? "text-slate-400" : "text-slate-500"}`}>
                     6-Digit Reset Code
                   </label>
                   <input
                     type="text"
-                    placeholder="123456"
+                    placeholder="· · · · · ·"
                     maxLength={6}
                     value={otp}
                     onChange={e => setOtp(e.target.value.replace(/\D/g, ""))}
-                    className={`${inp} text-center tracking-widest font-mono text-lg`}
+                    className={`${inp} text-center tracking-[0.5em] font-mono text-xl`}
                   />
                 </div>
+
+                {/* New password */}
                 <div>
                   <label className={`text-xs font-semibold mb-1 block ${dark ? "text-slate-400" : "text-slate-500"}`}>
                     New Password
                   </label>
-                  <input
-                    type="password"
+                  <PasswordInput
                     placeholder="Min. 6 characters"
                     value={newPassword}
                     onChange={e => setNewPassword(e.target.value)}
                     className={inp}
+                    dark={dark}
                   />
                 </div>
+
+                {/* Confirm password */}
                 <div>
                   <label className={`text-xs font-semibold mb-1 block ${dark ? "text-slate-400" : "text-slate-500"}`}>
                     Confirm New Password
                   </label>
-                  <input
-                    type="password"
+                  <PasswordInput
                     placeholder="Repeat password"
                     value={confirmPassword}
                     onChange={e => setConfirmPassword(e.target.value)}
                     onKeyDown={e => e.key === "Enter" && handleResetPassword()}
                     className={inp}
+                    dark={dark}
                   />
                 </div>
+
+                {/* Password match indicator */}
+                {confirmPassword && (
+                  <p className={`text-xs ${newPassword === confirmPassword ? "text-green-500" : "text-red-400"}`}>
+                    {newPassword === confirmPassword ? "✓ Passwords match" : "✗ Passwords do not match"}
+                  </p>
+                )}
+
                 {error && <p className="text-xs text-red-400">{error}</p>}
-                <div className="flex gap-2">
-                  <button onClick={() => { setStep(1); setError(""); }}
+
+                <div className="flex gap-2 pt-1">
+                  <button onClick={() => { setStep(1); setError(""); setOtp(""); }}
                     className={`flex-1 border rounded-xl py-2.5 text-sm font-medium transition
                       ${dark ? "border-slate-600 text-slate-400 hover:bg-slate-700"
                              : "border-gray-200 text-slate-500 hover:bg-gray-50"}`}>
@@ -189,16 +250,15 @@ function ForgotPasswordModal({ dark, onClose }) {
                     {loading ? "Resetting..." : "Reset Password"}
                   </button>
                 </div>
-              </>
-            )}
 
-            {/* Code expired? Resend */}
-            {step === 2 && !devOtp && (
-              <button onClick={() => { setStep(1); setOtp(""); setError(""); }}
-                className={`w-full text-xs text-center mt-1 transition
-                  ${dark ? "text-slate-500 hover:text-indigo-400" : "text-slate-400 hover:text-indigo-500"}`}>
-                Didn't receive the code? Send again
-              </button>
+                {!devOtp && (
+                  <button onClick={() => { setStep(1); setOtp(""); setError(""); }}
+                    className={`w-full text-xs text-center transition
+                      ${dark ? "text-slate-500 hover:text-indigo-400" : "text-slate-400 hover:text-indigo-500"}`}>
+                    Didn't receive the code? Resend
+                  </button>
+                )}
+              </>
             )}
           </div>
         )}
@@ -207,7 +267,7 @@ function ForgotPasswordModal({ dark, onClose }) {
   );
 }
 
-// ── Login Page ────────────────────────────────────────────────────────────────
+// ── Login / Register Page ─────────────────────────────────────────────────────
 export default function LoginPage({ onSuccess, onBack }) {
   const { login } = useAuth();
   const { dark, toggle } = useTheme();
@@ -234,7 +294,6 @@ export default function LoginPage({ onSuccess, onBack }) {
     const e = validate();
     setErrors(e);
     if (Object.keys(e).length > 0) return;
-
     setLoading(true);
     try {
       const endpoint = mode === "login" ? "/auth/login" : "/auth/register";
@@ -252,8 +311,6 @@ export default function LoginPage({ onSuccess, onBack }) {
       } else if (detail.toLowerCase().includes("invalid email or password")) {
         setGlobalError("Incorrect email or password. Please try again.");
         setErrors({ password: "Incorrect password" });
-      } else if (detail.toLowerCase().includes("not found") || detail.toLowerCase().includes("invalid")) {
-        setGlobalError("No account found with this email. Please create an account.");
       } else {
         setGlobalError(detail || "Something went wrong. Please try again.");
       }
@@ -262,12 +319,7 @@ export default function LoginPage({ onSuccess, onBack }) {
     }
   };
 
-  const switchMode = (m) => {
-    setMode(m);
-    setErrors({});
-    setGlobalError("");
-    setSuccessMsg("");
-  };
+  const switchMode = (m) => { setMode(m); setErrors({}); setGlobalError(""); setSuccessMsg(""); };
 
   // Theme helpers
   const bg = dark
@@ -282,16 +334,15 @@ export default function LoginPage({ onSuccess, onBack }) {
     ? `${inputBase} bg-slate-700 border-slate-600 text-white placeholder-slate-400 focus:border-indigo-500`
     : `${inputBase} bg-white border-gray-200 text-slate-800 placeholder-slate-400 focus:border-indigo-400`;
   const inputError = dark
-    ? `${inputBase} bg-slate-700 border-red-500 text-white placeholder-slate-400 focus:border-red-400`
+    ? `${inputBase} bg-slate-700 border-red-500 text-white placeholder-slate-400`
     : `${inputBase} bg-white border-red-400 text-slate-800 placeholder-slate-400`;
 
   return (
     <div className={bg}>
-      {/* Forgot password modal */}
       {showForgot && <ForgotPasswordModal dark={dark} onClose={() => setShowForgot(false)} />}
 
       <div className="w-full max-w-sm">
-        {/* Back + theme */}
+        {/* Back + theme toggle */}
         <div className="flex items-center justify-between mb-6">
           {onBack && (
             <button onClick={onBack}
@@ -307,7 +358,7 @@ export default function LoginPage({ onSuccess, onBack }) {
 
         {/* Logo */}
         <div className="text-center mb-6">
-          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white text-xl font-black mx-auto mb-3">
+          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white text-xl font-black mx-auto mb-3 shadow-lg">
             AN
           </div>
           <h1 className={`text-2xl font-bold ${dark ? "text-white" : "text-slate-900"}`}>AskMyNotes</h1>
@@ -315,7 +366,7 @@ export default function LoginPage({ onSuccess, onBack }) {
         </div>
 
         <div className={`rounded-2xl border p-6 ${cardBg}`}>
-          {/* Tabs */}
+          {/* Mode tabs */}
           <div className={`flex rounded-xl p-1 mb-5 ${tabBg}`}>
             {["login", "register"].map(m => (
               <button key={m} onClick={() => switchMode(m)}
@@ -341,10 +392,14 @@ export default function LoginPage({ onSuccess, onBack }) {
               <FieldError msg={errors.email} />
             </div>
             <div>
-              <input type="password" placeholder="Password" value={form.password}
+              <PasswordInput
+                placeholder="Password"
+                value={form.password}
                 onChange={e => setForm({...form, password: e.target.value})}
                 onKeyDown={e => e.key === "Enter" && handleSubmit()}
-                className={errors.password ? inputError : inputNormal} />
+                className={errors.password ? inputError : inputNormal}
+                dark={dark}
+              />
               <FieldError msg={errors.password} />
             </div>
             {mode === "register" && (
@@ -356,7 +411,7 @@ export default function LoginPage({ onSuccess, onBack }) {
             )}
           </div>
 
-          {/* Forgot password link */}
+          {/* Forgot password */}
           {mode === "login" && (
             <div className="text-right mt-2">
               <button onClick={() => setShowForgot(true)}
